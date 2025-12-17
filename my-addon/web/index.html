@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>BLE Lab (MVP-1)</title>
+  <style>
+    body { font-family: sans-serif; padding: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button { padding: 8px 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { text-align: left; }
+    .muted { opacity: 0.7; }
+    .badge { display:inline-block; padding:2px 6px; border:1px solid #999; border-radius: 999px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>BLE Lab（MVP-1）</h2>
+
+  <div class="row">
+    <button id="btnScan">SCAN ZP2</button>
+    <button id="btnRefresh">刷新清單</button>
+    <button id="btnApply">確認（儲存勾選）</button>
+
+    <label class="muted">
+      <input type="checkbox" id="chkOnlyZp2" checked />
+      只顯示 ZP2
+    </label>
+
+    <span id="status" class="muted"></span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:40px;"></th>
+        <th>Address</th>
+        <th>Name/Alias</th>
+        <th>RSSI</th>
+        <th>ZP2</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+<script>
+const statusEl = document.getElementById("status");
+const tbody = document.getElementById("tbody");
+const chkOnlyZp2 = document.getElementById("chkOnlyZp2");
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+async function scan() {
+  setStatus("掃描中...");
+  const r = await fetch("/api/scan", { method: "POST" });
+  const j = await r.json();
+  setStatus(`掃描完成：${j.count} 台（ZP2: ${j.zp2_count}）`);
+  await refresh();
+}
+
+async function refresh() {
+  const only = chkOnlyZp2.checked ? "true" : "false";
+  const r = await fetch(`/api/devices?only_zp2=${only}`);
+  const j = await r.json();
+
+  tbody.innerHTML = "";
+  for (const d of j.devices) {
+    const tr = document.createElement("tr");
+
+    const tdChk = document.createElement("td");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.addr = d.address;
+    tdChk.appendChild(cb);
+
+    const tdAddr = document.createElement("td");
+    tdAddr.textContent = d.address || "";
+
+    const tdName = document.createElement("td");
+    tdName.textContent = d.name || "";
+
+    const tdRssi = document.createElement("td");
+    tdRssi.textContent = (d.rssi === null || d.rssi === undefined) ? "" : d.rssi;
+
+    const tdZ = document.createElement("td");
+    tdZ.innerHTML = d.is_zp2 ? '<span class="badge">ZP2</span>' : '';
+
+    tr.appendChild(tdChk);
+    tr.appendChild(tdAddr);
+    tr.appendChild(tdName);
+    tr.appendChild(tdRssi);
+    tr.appendChild(tdZ);
+
+    tbody.appendChild(tr);
+  }
+
+  setStatus(`清單更新（age: ${j.age_sec}s）`);
+}
+
+async function apply() {
+  const targets = [];
+  tbody.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    if (cb.checked) targets.push(cb.dataset.addr);
+  });
+
+  if (targets.length === 0) {
+    setStatus("你沒有勾選任何裝置");
+    return;
+  }
+
+  const r = await fetch("/api/apply", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({targets})
+  });
+  const j = await r.json();
+  setStatus(`已儲存 ${j.saved} 台`);
+}
+
+document.getElementById("btnScan").onclick = scan;
+document.getElementById("btnRefresh").onclick = refresh;
+document.getElementById("btnApply").onclick = apply;
+
+refresh();
+</script>
+</body>
+</html>

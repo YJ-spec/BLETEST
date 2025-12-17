@@ -1,11 +1,15 @@
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
+RUN apt-get update && apt-get install -y \
+    dbus \
+    bluez \
+    && rm -rf /var/lib/apt/lists/*
 # 安裝 paho-mqtt 套件
-RUN pip install --no-cache-dir paho-mqtt requests flask PyYAML bleak
+RUN pip install --no-cache-dir bleak fastapi uvicorn
 
 # 拷貝檔案
-COPY config.yaml /config.yaml
 COPY run.py /run.py
+COPY web /app/web
 
 # 單一入口：同時啟兩支程式
 
