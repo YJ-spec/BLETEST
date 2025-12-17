@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.0.9"
+version: "0.0.10"
 slug: "ble_integration"
 description: "This Home Assistant add-on listens to MQTT messages and automatically handles
   ZP2 firmware checks, OTA updates, and MQTT Discovery for ZP2 devices.
@@ -15,17 +15,13 @@ host_dbus: true
 
 homeassistant_api: true
 
-map:
-  - share:rw
+# Web UI
+webui: "http://[HOST]:8080"
+ports:
+  8080/tcp: 8080
 
-options:
+# map:
+#   - share:rw
 
-  mqtt_username: "test"
-  mqtt_password: "test"
-
-schema:
-  mqtt_username: str?
-  mqtt_password: str?
-  # ota_ip: str
 
   
