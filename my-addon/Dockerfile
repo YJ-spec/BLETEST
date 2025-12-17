@@ -9,5 +9,4 @@ COPY run.py /run.py
 
 # 單一入口：同時啟兩支程式
 
-# CMD ["python3", "/run.py"]
-CMD ["python3", "/ble.py"]
+CMD ["python3", "/run.py"]

@@ -1,6 +1,6 @@
-name: BLE integration
+name: ble_integration
 url: https://github.com/YJ-spec/BLETEST
 maintainer: YJ-spec <your@email.com>
 description: >
-
-  An add-on to integrate BLE devices with Home Assistant using MQTT.
+  This custom add-on provides MQTT Discovery integration for CurieJet devices
+  in Home Assistant, such as 3DRP and others.

@@ -1,4 +1,4 @@
-# BLE TEST
-
+# ZP2 RECEIVER
+接收並註冊HA
 
 
