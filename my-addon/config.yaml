@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.0.19
+version: "0.0.20
 slug: "ble_integration"
 description: >
   This Home Assistant add-on listens to MQTT messages and automatically handles
@@ -32,7 +32,6 @@ map:
   - share:rw
 
 options:
-
   mqtt_username: "test"
   mqtt_password: "test"
 
