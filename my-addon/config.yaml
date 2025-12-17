@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.0.17"
+version: "0.0.18
 slug: "ble_integration"
 description: >
   This Home Assistant add-on listens to MQTT messages and automatically handles
@@ -18,9 +18,10 @@ host_dbus: true
 homeassistant_api: true
 
 ingress: false
-webui: "http://[HOST]:8080"
 ports:
-  "8080/tcp": 8080
+  "8088/tcp": 8088
+webui: "http://[HOST]:8088"
+
 
 map:
   - share:rw
