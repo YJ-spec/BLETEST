@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.0.2"
+version: "0.0.3"
 slug: "ble_integration"
 description: 
 startup: "services"
@@ -9,7 +9,7 @@ arch:
   - amd64
   - armv7
 init: false
-host_dbus: true
+# host_dbus: true
 
 homeassistant_api: true
 
