@@ -1,12 +1,29 @@
-FROM python:3.11-alpine
+# FROM python:3.11-alpine
 
-# 安裝 paho-mqtt 套件
-RUN pip install --no-cache-dir paho-mqtt requests flask PyYAML bleak
+# # 安裝 paho-mqtt 套件
+# RUN pip install --no-cache-dir paho-mqtt requests flask PyYAML bleak
 
-# 拷貝檔案
-COPY config.yaml /config.yaml
+# # 拷貝檔案
+# COPY config.yaml /config.yaml
+# COPY run.py /run.py
+
+# # 單一入口：同時啟兩支程式
+
+# CMD ["python3", "/run.py"]
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    dbus \
+    bluez \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir bleak fastapi uvicorn
+
 COPY run.py /run.py
+COPY web /web
 
-# 單一入口：同時啟兩支程式
+EXPOSE 8080
 
-CMD ["python3", "/run.py"]
+CMD ["python", "/run.py"]
