@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.1.1"
+version: "0.1.2"
 slug: "ble_integration"
 description: "This Home Assistant add-on listens to MQTT messages and automatically handles
   ZP2 firmware checks, OTA updates, and MQTT Discovery for ZP2 devices.

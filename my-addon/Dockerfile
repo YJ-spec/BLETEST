@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir bleak fastapi uvicorn
 
 # 拷貝檔案
 COPY run.py /run.py
-COPY web /app/web
+COPY web ./web
 
 # 單一入口：同時啟兩支程式
 
