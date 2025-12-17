@@ -1,7 +1,7 @@
 FROM python:3.11-alpine
 
 # 安裝 paho-mqtt 套件
-RUN pip install --no-cache-dir paho-mqtt requests flask PyYAML
+RUN pip install --no-cache-dir paho-mqtt requests flask PyYAML bleak
 
 # 拷貝檔案
 COPY config.yaml /config.yaml
