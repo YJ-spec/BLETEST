@@ -20,7 +20,7 @@ SCAN_TIMEOUT_SEC = 8.0   # 實際掃描時間
 app = FastAPI(title="BLE Lab (MVP-1)")
 
 # 掛靜態網頁
-app.mount("/static", StaticFiles(directory="/app/web"), name="static")
+app.mount("/static", StaticFiles(directory="/web"), name="static")
 
 
 def ensure_data_dir():
