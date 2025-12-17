@@ -1,5 +1,6 @@
-name: BLE
+name: BLE integration
 url: https://github.com/YJ-spec/BLETEST
 maintainer: YJ-spec <your@email.com>
 description: >
 
+  An add-on to integrate BLE devices with Home Assistant using MQTT.
