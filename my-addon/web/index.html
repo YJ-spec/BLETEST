@@ -23,6 +23,8 @@
     <button id="btnRefresh">刷新清單</button>
     <button id="btnApply">確認（儲存勾選）</button>
     <button id="btnProbe">Probe（讀取GATT）</button>
+    <button id="btnFetch">讀取資訊（連線）</button>
+
 
 
     <label class="muted">
@@ -34,7 +36,7 @@
   </div>
 
   <table>
-    <thead>
+    <!-- <thead>
       <tr>
         <th style="width:40px;"></th>
         <th>Address</th>
@@ -42,7 +44,21 @@
         <th>RSSI</th>
         <th>ZP2</th>
       </tr>
+    </thead> -->
+    <thead>
+      <tr>
+        <th style="width:40px;"></th>
+        <th>Address</th>
+        <th>名稱</th>
+        <th>RSSI</th>
+        <th>AWS/LOCAL</th>
+        <th>SSID</th>
+        <th>MQTT地址</th>
+        <th>IP地址</th>
+        <th>型號</th>
+        </tr>
     </thead>
+
     <tbody id="tbody"></tbody>
   </table>
 
@@ -52,6 +68,8 @@
 
 
 <script>
+let g_devices = []; // 目前表格資料
+
 const statusEl = document.getElementById("status");
 const tbody = document.getElementById("tbody");
 const chkOnlyZp2 = document.getElementById("chkOnlyZp2");
@@ -88,13 +106,10 @@ async function scan() {
   await refresh();
 }
 
-async function refresh() {
-  const only = chkOnlyZp2.checked ? "true" : "false";
-  const r = await fetch(`/api/devices?only_zp2=${only}`);
-  const j = await r.json();
 
+function renderTable() {
   tbody.innerHTML = "";
-  for (const d of j.devices) {
+  for (const d of g_devices) {
     const tr = document.createElement("tr");
 
     const tdChk = document.createElement("td");
@@ -103,33 +118,89 @@ async function refresh() {
     cb.dataset.addr = d.address;
     tdChk.appendChild(cb);
 
-    const tdAddr = document.createElement("td");
-    tdAddr.textContent = d.address || "";
-
-    const tdName = document.createElement("td");
-    tdName.textContent = d.name || "";
-
-    const tdRssi = document.createElement("td");
-    tdRssi.textContent = (d.rssi === null || d.rssi === undefined) ? "" : d.rssi;
-
-    const tdZ = document.createElement("td");
-    tdZ.innerHTML = d.is_zp2 ? '<span class="badge">ZP2</span>' : '';
+    function td(text) {
+      const x = document.createElement("td");
+      x.textContent = (text === null || text === undefined) ? "" : String(text);
+      return x;
+    }
 
     tr.appendChild(tdChk);
-    tr.appendChild(tdAddr);
-    tr.appendChild(tdName);
-    tr.appendChild(tdRssi);
-    tr.appendChild(tdZ);
+    tr.appendChild(td(d.address || ""));
+    tr.appendChild(td(d.name || ""));
+    tr.appendChild(td((d.rssi === null || d.rssi === undefined) ? "" : d.rssi));
+    tr.appendChild(td(d.mode || ""));
+    tr.appendChild(td(d.ssid || ""));
+    tr.appendChild(td(d.mqtt || ""));
+    tr.appendChild(td(d.ip || ""));
+    tr.appendChild(td(d.model || ""));
 
     tbody.appendChild(tr);
   }
+}
+
+async function refresh() {
+  const only = chkOnlyZp2.checked ? "true" : "false";
+  const r = await fetch(`/api/devices?only_zp2=${only}`);
+  const j = await r.json();
+
+  // 只更新 scan 得到的三欄，保留既有 details 欄位
+  const oldMap = new Map(g_devices.map(x => [x.address, x]));
+  g_devices = (j.devices || []).map(d => {
+    const old = oldMap.get(d.address) || {};
+    return { ...d, ...old, ...d }; // old 的 details 保留，scan 的 name/rssi 覆蓋
+  });
+
+  renderTable();
+
   if (j.expired) {
     setStatus(`清單已超過 ${j.ttl_sec}s，已清空`);
   } else {
     setStatus(`清單更新（age: ${j.age_sec}s / ttl: ${j.ttl_sec}s）`);
   }
-
 }
+
+
+async function fetchDetails() {
+  const targets = [];
+  tbody.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    if (cb.checked) targets.push(cb.dataset.addr);
+  });
+
+  if (targets.length === 0) {
+    setStatus("你沒有勾選任何裝置");
+    return;
+  }
+
+  setStatus("讀取資訊中（逐台連線）...");
+
+  const r = await fetch("/api/fetch_details", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({targets})
+  });
+  const j = await r.json();
+
+  // 合併回 g_devices
+  const map = new Map(g_devices.map(x => [x.address, x]));
+  for (const it of (j.results || [])) {
+    const old = map.get(it.address) || { address: it.address };
+    map.set(it.address, { ...old, ...it });
+  }
+  g_devices = Array.from(map.values());
+
+  renderTable();
+
+  // 如果有失敗的，顯示第一個錯誤（你之後要做 per-row error 也行）
+  const fail = (j.results || []).find(x => !x.ok);
+  if (fail) {
+    setStatus(`讀取完成（部分失敗）：${fail.address} ${fail.error || ""}`);
+  } else {
+    setStatus("讀取完成（全部成功）");
+  }
+}
+
+document.getElementById("btnFetch").onclick = fetchDetails;
+
 
 async function apply() {
   const targets = [];

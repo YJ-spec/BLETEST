@@ -2,6 +2,7 @@ import os
 import json
 import time
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI
@@ -10,25 +11,32 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bleak import BleakScanner, BleakClient
 
-import logging
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-
+# ------------------------------------------------------------
+# Paths / Constants
+# ------------------------------------------------------------
 DATA_DIR = "/data"
 CACHE_PATH = os.path.join(DATA_DIR, "scan_cache.json")
 SELECTED_PATH = os.path.join(DATA_DIR, "selected_devices.json")
 PROBE_PATH = os.path.join(DATA_DIR, "probe_results.json")
 
 CONNECT_TIMEOUT_SEC = 12.0
-SCAN_CACHE_TTL_SEC = 300  # 掃描結果保存 300 秒
-SCAN_TIMEOUT_SEC = 8.0   # 實際掃描時間
+SCAN_CACHE_TTL_SEC = 300  # 5 min
+SCAN_TIMEOUT_SEC = 8.0
 
-app = FastAPI(title="BLE Lab (MVP-2: Probe GATT)")
+app = FastAPI(title="BLE Lab (MVP-2: Probe + Fetch Details)")
 
-# 掛靜態網頁
+# 靜態網頁（目前主要用 / 讀 index.html，/static 暫時可留）
 app.mount("/static", StaticFiles(directory="/web"), name="static")
 
 
+# ------------------------------------------------------------
+# Utils
+# ------------------------------------------------------------
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -48,7 +56,6 @@ def save_json(path: str, obj):
 
 
 def get_props(device) -> Dict[str, Any]:
-    # bleak 在 Linux/BlueZ 後端通常把資訊塞在 details["props"]
     details = getattr(device, "details", None)
     if isinstance(details, dict):
         return details.get("props", {}) or {}
@@ -59,7 +66,6 @@ def get_name(device, props: Dict[str, Any]) -> Optional[str]:
     name = getattr(device, "name", None)
     if name:
         return name
-    # BlueZ props 可能有 Name 或 Alias
     return props.get("Name") or props.get("Alias")
 
 
@@ -68,13 +74,21 @@ def get_rssi(props: Dict[str, Any]) -> Optional[int]:
 
 
 def is_zp2_candidate(name: Optional[str], props: Dict[str, Any]) -> bool:
-    # MVP-1：先用「名字/別名包含 ZP2」做初版篩選（之後再改成 ManufacturerData matcher）
     if name and "ZP2" in name.upper():
         return True
     alias = props.get("Alias")
     if isinstance(alias, str) and "ZP2" in alias.upper():
         return True
     return False
+
+
+def _bytes_to_text(b: bytes) -> str:
+    if not b:
+        return ""
+    try:
+        return b.decode("utf-8", errors="replace").replace("\x00", "").strip()
+    except Exception:
+        return ""
 
 
 async def do_scan() -> List[Dict[str, Any]]:
@@ -92,13 +106,14 @@ async def do_scan() -> List[Dict[str, Any]]:
             "name": name,
             "rssi": rssi,
             "address_type": props.get("AddressType"),
-            "manufacturer_data": {str(k): (v.hex() if hasattr(v, "hex") else str(v))
-                                  for k, v in (props.get("ManufacturerData") or {}).items()},
+            "manufacturer_data": {
+                str(k): (v.hex() if hasattr(v, "hex") else str(v))
+                for k, v in (props.get("ManufacturerData") or {}).items()
+            },
             "is_zp2": is_zp2_candidate(name, props),
         }
         results.append(item)
 
-    # 排序：ZP2 在前、再看 RSSI 強弱
     def rssi_sort(v):
         r = v.get("rssi")
         return r if isinstance(r, int) else -999
@@ -106,36 +121,10 @@ async def do_scan() -> List[Dict[str, Any]]:
     results.sort(key=lambda x: (not x["is_zp2"], -rssi_sort(x)))
     return results
 
-import logging
-from typing import Dict, Any, List
 
-# 連線超時：你可以調大一點，例如 20.0
-CONNECT_TIMEOUT_SEC = 12.0
-
-# 建議在檔案最上面只設定一次 logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-import logging
-from typing import Dict, Any, List
-from bleak import BleakClient
-
-CONNECT_TIMEOUT_SEC = 12.0
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-import logging
-from typing import Dict, Any, List
-from bleak import BleakClient
-
-CONNECT_TIMEOUT_SEC = 12.0
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-
+# ------------------------------------------------------------
+# Probe (enumerate GATT)
+# ------------------------------------------------------------
 async def probe_one(address: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "address": address,
@@ -154,9 +143,7 @@ async def probe_one(address: str) -> Dict[str, Any]:
             if svcs is None:
                 raise RuntimeError("client.services is None (GATT not resolved)")
 
-            # BleakGATTServiceCollection: 用 services.values() 取出所有 service
             service_list = list(getattr(svcs, "services", {}).values())
-
             svc_count = len(service_list)
             chr_count = sum(len(s.characteristics) for s in service_list)
             logging.info(f"[PROBE] services -> {address}: svc={svc_count}, chr={chr_count}")
@@ -165,9 +152,7 @@ async def probe_one(address: str) -> Dict[str, Any]:
 
             for s in service_list:
                 chars_out: List[Dict[str, Any]] = []
-
                 for c in s.characteristics:
-                    # descriptors 可能不是每次都有
                     descs = []
                     for d in (getattr(c, "descriptors", []) or []):
                         try:
@@ -199,9 +184,30 @@ async def probe_one(address: str) -> Dict[str, Any]:
     return result
 
 
+# ------------------------------------------------------------
+# Read specific (service, char) helper for fetch_details
+# ------------------------------------------------------------
+async def _read_in_service(client: BleakClient, service_uuid: str, char_uuid: str) -> bytes:
+    svcs = client.services
+    if svcs is None:
+        raise RuntimeError("client.services is None")
+
+    svc = svcs.get_service(service_uuid)
+    if svc is None:
+        raise RuntimeError(f"service not found: {service_uuid}")
+
+    ch = svc.get_characteristic(char_uuid)
+    if ch is None:
+        raise RuntimeError(f"char not found in {service_uuid}: {char_uuid}")
+
+    return await client.read_gatt_char(ch)
+
+
+# ------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def index():
-    # 直接回傳 web/index.html
     with open("/web/index.html", "r", encoding="utf-8") as f:
         return f.read()
 
@@ -224,7 +230,6 @@ def api_devices(only_zp2: bool = True):
     ts = int(cache.get("ts", 0) or 0)
     age = int(time.time()) - ts
 
-    # 超過 TTL：清空 cache，回空清單
     if ts == 0 or age > SCAN_CACHE_TTL_SEC:
         save_json(CACHE_PATH, {"ts": 0, "timeout_sec": SCAN_TIMEOUT_SEC, "results": []})
         return {
@@ -248,14 +253,12 @@ def api_devices(only_zp2: bool = True):
     }
 
 
-
 class ApplyBody(BaseModel):
-    targets: List[str]  # address list (MAC)
+    targets: List[str]
 
 
 @app.post("/api/apply")
 def api_apply(body: ApplyBody):
-    # MVP-1：只存檔，不做 BLE 寫入
     selected = {
         "ts": int(time.time()),
         "targets": body.targets,
@@ -264,12 +267,91 @@ def api_apply(body: ApplyBody):
     return {"ok": True, "saved": len(body.targets), "path": SELECTED_PATH}
 
 
+class FetchDetailsBody(BaseModel):
+    targets: List[str]
+
+
+@app.post("/api/fetch_details")
+async def api_fetch_details(body: FetchDetailsBody):
+    # UUID mapping (128-bit)
+    SVC_120A = "0000120a-0000-1000-8000-00805f9b34fb"
+    CH_IP = "00002a26-0000-1000-8000-00805f9b34fb"
+
+    SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
+    CH_SSID = "000012a1-0000-1000-8000-00805f9b34fb"
+    CH_MODE = "000012a5-0000-1000-8000-00805f9b34fb"
+    CH_MQTT = "000012a6-0000-1000-8000-00805f9b34fb"
+
+    SVC_12C0 = "000012c0-0000-1000-8000-00805f9b34fb"
+    CH_MODEL = "00000000-0000-1000-8000-00805f9b34fb"
+
+    results = []
+
+    for address in body.targets:
+        item = {
+            "address": address,
+            "ok": False,
+            "error": None,
+            "mode": "",
+            "ssid": "",
+            "mqtt": "",
+            "ip": "",
+            "model": "",
+        }
+
+        client: Optional[BleakClient] = None
+        try:
+            client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
+            await client.connect()
+
+            # 保險：避免偶發 services 還沒 resolved
+            await asyncio.sleep(0.2)
+
+            ip_b = await _read_in_service(client, SVC_120A, CH_IP)
+            ssid_b = await _read_in_service(client, SVC_12AA, CH_SSID)
+            mode_b = await _read_in_service(client, SVC_12AA, CH_MODE)
+            mqtt_b = await _read_in_service(client, SVC_12AA, CH_MQTT)
+            model_b = await _read_in_service(client, SVC_12C0, CH_MODEL)
+
+            ip_s = _bytes_to_text(ip_b)
+            ssid_s = _bytes_to_text(ssid_b)
+            mqtt_s = _bytes_to_text(mqtt_b)
+            model_s = _bytes_to_text(model_b)
+
+            mode_v = ""
+            if mode_b:
+                if mode_b[:1] in (b"\x00", b"\x01"):
+                    mode_v = "AWS" if mode_b[0] == 0 else "LOCAL"
+                else:
+                    t = _bytes_to_text(mode_b)
+                    mode_v = "AWS" if t == "0" else ("LOCAL" if t == "1" else t)
+
+            item.update({
+                "ok": True,
+                "mode": mode_v,
+                "ssid": ssid_s,
+                "mqtt": mqtt_s,
+                "ip": ip_s,
+                "model": model_s,
+            })
+
+        except Exception as e:
+            item["error"] = repr(e)
+
+        finally:
+            try:
+                if client is not None and client.is_connected:
+                    await client.disconnect()
+            except Exception:
+                pass
+
+        results.append(item)
+
+    return {"ok": True, "results": results}
+
+
 @app.post("/api/probe")
 async def api_probe():
-    """
-    MVP-2: 讀取 /data/selected_devices.json 裡的 targets
-    逐台 connect + enumerate services/characteristics
-    """
     selected = load_json(SELECTED_PATH, default={"targets": []})
     targets = selected.get("targets") or []
 
@@ -279,7 +361,6 @@ async def api_probe():
         "results": [],
     }
 
-    # 逐台 probe（先不要並行）
     for addr in targets:
         out["results"].append(await probe_one(addr))
 
