@@ -20,7 +20,7 @@ SELECTED_PATH = os.path.join(DATA_DIR, "selected_devices.json")
 PROBE_PATH = os.path.join(DATA_DIR, "probe_results.json")
 
 CONNECT_TIMEOUT_SEC = 12.0
-SCAN_CACHE_TTL_SEC = 60  # 掃描結果保存 60 秒
+SCAN_CACHE_TTL_SEC = 300  # 掃描結果保存 300 秒
 SCAN_TIMEOUT_SEC = 8.0   # 實際掃描時間
 
 app = FastAPI(title="BLE Lab (MVP-2: Probe GATT)")
@@ -221,7 +221,19 @@ async def api_scan():
 @app.get("/api/devices")
 def api_devices(only_zp2: bool = True):
     cache = load_json(CACHE_PATH, default={"ts": 0, "results": []})
-    age = int(time.time()) - int(cache.get("ts", 0) or 0)
+    ts = int(cache.get("ts", 0) or 0)
+    age = int(time.time()) - ts
+
+    # 超過 TTL：清空 cache，回空清單
+    if ts == 0 or age > SCAN_CACHE_TTL_SEC:
+        save_json(CACHE_PATH, {"ts": 0, "timeout_sec": SCAN_TIMEOUT_SEC, "results": []})
+        return {
+            "ok": True,
+            "age_sec": age,
+            "ttl_sec": SCAN_CACHE_TTL_SEC,
+            "expired": True,
+            "devices": [],
+        }
 
     results = cache.get("results", [])
     if only_zp2:
@@ -231,8 +243,10 @@ def api_devices(only_zp2: bool = True):
         "ok": True,
         "age_sec": age,
         "ttl_sec": SCAN_CACHE_TTL_SEC,
+        "expired": False,
         "devices": results,
     }
+
 
 
 class ApplyBody(BaseModel):

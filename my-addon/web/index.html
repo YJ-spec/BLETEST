@@ -59,6 +59,8 @@ const probeBox = document.getElementById("probeBox");
 
 function setStatus(msg) { statusEl.textContent = msg; }
 
+function clearTable() { tbody.innerHTML = ""; }
+
 async function probe() {
   setStatus("Probe 中（逐台連線讀取 GATT）...");
   probeBox.textContent = "";
@@ -78,6 +80,7 @@ async function probe() {
 
 document.getElementById("btnProbe").onclick = probe;
 async function scan() {
+  clearTable();
   setStatus("掃描中...");
   const r = await fetch("/api/scan", { method: "POST" });
   const j = await r.json();
@@ -120,8 +123,12 @@ async function refresh() {
 
     tbody.appendChild(tr);
   }
+  if (j.expired) {
+    setStatus(`清單已超過 ${j.ttl_sec}s，已清空`);
+  } else {
+    setStatus(`清單更新（age: ${j.age_sec}s / ttl: ${j.ttl_sec}s）`);
+  }
 
-  setStatus(`清單更新（age: ${j.age_sec}s）`);
 }
 
 async function apply() {
