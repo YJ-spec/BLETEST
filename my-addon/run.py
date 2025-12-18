@@ -221,7 +221,13 @@ async def api_scan():
         "results": results,
     }
     save_json(CACHE_PATH, payload)
-    return {"ok": True, "count": len(results), "zp2_count": sum(1 for r in results if r["is_zp2"])}
+    return {
+        "ok": True,
+        "count": len(results),
+        "zp2_count": sum(1 for r in results if r["is_zp2"]),
+        "results": results,
+    }
+
 
 
 @app.get("/api/devices")

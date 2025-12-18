@@ -12,7 +12,6 @@
     th, td { border: 1px solid #ddd; padding: 8px; }
     th { text-align: left; }
     .muted { opacity: 0.7; }
-    .badge { display:inline-block; padding:2px 6px; border:1px solid #999; border-radius: 999px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -20,12 +19,7 @@
 
   <div class="row">
     <button id="btnScan">SCAN ZP2</button>
-    <button id="btnRefresh">刷新清單</button>
-    <button id="btnApply">確認（儲存勾選）</button>
-    <button id="btnProbe">Probe（讀取GATT）</button>
     <button id="btnFetch">讀取資訊（連線）</button>
-
-
 
     <label class="muted">
       <input type="checkbox" id="chkOnlyZp2" checked />
@@ -36,79 +30,61 @@
   </div>
 
   <table>
-    <!-- <thead>
-      <tr>
-        <th style="width:40px;"></th>
-        <th>Address</th>
-        <th>Name/Alias</th>
-        <th>RSSI</th>
-        <th>ZP2</th>
-      </tr>
-    </thead> -->
     <thead>
       <tr>
         <th style="width:40px;"></th>
         <th>Address</th>
         <th>名稱</th>
         <th>RSSI</th>
-        <th>AWS/LOCAL</th>
+        <th>AWS / LOCAL</th>
         <th>SSID</th>
         <th>MQTT地址</th>
         <th>IP地址</th>
         <th>型號</th>
-        </tr>
+      </tr>
     </thead>
-
     <tbody id="tbody"></tbody>
   </table>
 
-  <h3>Probe Result</h3>
-    <pre id="probeBox" style="border:1px solid #ddd; padding:12px; max-height: 360px; overflow:auto;"></pre>
-    
-
-
 <script>
-let g_devices = []; // 目前表格資料
+/* ===============================
+ * Global state
+ * =============================== */
+let g_scan_devices = [];  // 最新 scan 的原始結果（只含 scan 資訊）
+let g_devices = [];       // 目前顯示用資料（合併 details）
 
 const statusEl = document.getElementById("status");
 const tbody = document.getElementById("tbody");
 const chkOnlyZp2 = document.getElementById("chkOnlyZp2");
-const probeBox = document.getElementById("probeBox");
 
-function setStatus(msg) { statusEl.textContent = msg; }
-
-function clearTable() { tbody.innerHTML = ""; }
-
-async function probe() {
-  setStatus("Probe 中（逐台連線讀取 GATT）...");
-  probeBox.textContent = "";
-
-  // 先把目前勾選存檔（沿用 apply 行為）
-  await apply();
-
-  const r = await fetch("/api/probe", { method: "POST" });
-  const j = await r.json();
-
-  const rr = await fetch("/api/probe_result");
-  const res = await rr.json();
-
-  probeBox.textContent = JSON.stringify(res, null, 2);
-  setStatus(`Probe 完成：${res.count} 台`);
+/* ===============================
+ * Helpers
+ * =============================== */
+function setStatus(msg) {
+  statusEl.textContent = msg || "";
 }
 
-document.getElementById("btnProbe").onclick = probe;
-async function scan() {
-  clearTable();
-  setStatus("掃描中...");
-  const r = await fetch("/api/scan", { method: "POST" });
-  const j = await r.json();
-  setStatus(`掃描完成：${j.count} 台（ZP2: ${j.zp2_count}）`);
-  await refresh();
+function clearTable() {
+  tbody.innerHTML = "";
 }
 
+function applyFilter() {
+  const only = chkOnlyZp2.checked;
+
+  // 保留已經讀到的 details（ssid/mqtt/ip/model/mode）
+  const oldMap = new Map(g_devices.map(x => [x.address, x]));
+
+  g_devices = (g_scan_devices || [])
+    .filter(d => !only || d.is_zp2)
+    .map(d => ({
+      ...d,
+      ...(oldMap.get(d.address) || {})
+    }));
+}
 
 function renderTable() {
   tbody.innerHTML = "";
+
   for (const d of g_devices) {
     const tr = document.createElement("tr");
 
@@ -120,14 +96,17 @@ function renderTable() {
 
     function td(text) {
       const x = document.createElement("td");
-      x.textContent = (text === null || text === undefined) ? "" : String(text);
+      x.textContent =
+        (text === null || text === undefined) ? "" : String(text);
       return x;
     }
 
     tr.appendChild(tdChk);
     tr.appendChild(td(d.address || ""));
     tr.appendChild(td(d.name || ""));
-    tr.appendChild(td((d.rssi === null || d.rssi === undefined) ? "" : d.rssi));
+    tr.appendChild(td(
+      (d.rssi === null || d.rssi === undefined) ? "" : d.rssi
+    ));
     tr.appendChild(td(d.mode || ""));
     tr.appendChild(td(d.ssid || ""));
     tr.appendChild(td(d.mqtt || ""));
@@ -138,27 +117,22 @@ function renderTable() {
   }
 }
 
-async function refresh() {
-  const only = chkOnlyZp2.checked ? "true" : "false";
-  const r = await fetch(`/api/devices?only_zp2=${only}`);
+/* ===============================
+ * Actions
+ * =============================== */
+async function scan() {
+  clearTable();
+  setStatus("掃描中...");
+
+  const r = await fetch("/api/scan", { method: "POST" });
   const j = await r.json();
 
-  // 只更新 scan 得到的三欄，保留既有 details 欄位
-  const oldMap = new Map(g_devices.map(x => [x.address, x]));
-  g_devices = (j.devices || []).map(d => {
-    const old = oldMap.get(d.address) || {};
-    return { ...d, ...old, ...d }; // old 的 details 保留，scan 的 name/rssi 覆蓋
-  });
+  setStatus(`掃描完成：${j.count} 台（ZP2: ${j.zp2_count}）`);
 
+  g_scan_devices = (j.results || []);
+  applyFilter();
   renderTable();
-
-  if (j.expired) {
-    setStatus(`清單已超過 ${j.ttl_sec}s，已清空`);
-  } else {
-    setStatus(`清單更新（age: ${j.age_sec}s / ttl: ${j.ttl_sec}s）`);
-  }
 }
-
 
 async function fetchDetails() {
   const targets = [];
@@ -175,8 +149,8 @@ async function fetchDetails() {
 
   const r = await fetch("/api/fetch_details", {
     method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({targets})
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targets })
   });
   const j = await r.json();
 
@@ -190,7 +164,6 @@ async function fetchDetails() {
 
   renderTable();
 
-  // 如果有失敗的，顯示第一個錯誤（你之後要做 per-row error 也行）
   const fail = (j.results || []).find(x => !x.ok);
   if (fail) {
     setStatus(`讀取完成（部分失敗）：${fail.address} ${fail.error || ""}`);
@@ -199,34 +172,17 @@ async function fetchDetails() {
   }
 }
 
-document.getElementById("btnFetch").onclick = fetchDetails;
-
-
-async function apply() {
-  const targets = [];
-  tbody.querySelectorAll("input[type=checkbox]").forEach(cb => {
-    if (cb.checked) targets.push(cb.dataset.addr);
-  });
-
-  if (targets.length === 0) {
-    setStatus("你沒有勾選任何裝置");
-    return;
-  }
-
-  const r = await fetch("/api/apply", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({targets})
-  });
-  const j = await r.json();
-  setStatus(`已儲存 ${j.saved} 台`);
-}
+/* ===============================
+ * Events
+ * =============================== */
+chkOnlyZp2.addEventListener("change", () => {
+  applyFilter();
+  renderTable();
+});
 
 document.getElementById("btnScan").onclick = scan;
-document.getElementById("btnRefresh").onclick = refresh;
-document.getElementById("btnApply").onclick = apply;
-
-refresh();
+document.getElementById("btnFetch").onclick = fetchDetails;
 </script>
+
 </body>
 </html>
