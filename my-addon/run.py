@@ -10,6 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bleak import BleakScanner, BleakClient
 
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
 
 DATA_DIR = "/data"
 CACHE_PATH = os.path.join(DATA_DIR, "scan_cache.json")
@@ -103,28 +106,63 @@ async def do_scan() -> List[Dict[str, Any]]:
     results.sort(key=lambda x: (not x["is_zp2"], -rssi_sort(x)))
     return results
 
+import logging
+from typing import Dict, Any, List
+
+# 連線超時：你可以調大一點，例如 20.0
+CONNECT_TIMEOUT_SEC = 12.0
+
+# 建議在檔案最上面只設定一次 logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
 
 async def probe_one(address: str) -> Dict[str, Any]:
+    """
+    逐台裝置：
+    1) BLE connect
+    2) get_services()
+    3) 把 services/characteristics/properties 整理成 JSON-friendly 結構回傳
+
+    注意：
+    - 這裡「一定有連線」，拿 GATT 必須連線。
+    - 失敗會回 ok=False 並提供 error（用 repr(e) 避免空字串）。
+    """
     result: Dict[str, Any] = {
         "address": address,
         "ok": False,
         "error": None,
-        "services": [],
+        "services": [],  # List[service]
     }
 
-    try:
-        async with BleakClient(address, timeout=CONNECT_TIMEOUT_SEC) as client:
-            svcs = await client.get_services()
+    logging.info(f"[PROBE] connect -> {address}")
 
-            services_out = []
+    try:
+        # BleakClient 會透過 BlueZ (DBus) 連線
+        async with BleakClient(address, timeout=CONNECT_TIMEOUT_SEC) as client:
+            logging.info(f"[PROBE] connected -> {address}")
+
+            svcs = await client.get_services()
+            logging.info(f"[PROBE] services_count -> {address}: {len(svcs)}")
+
+            services_out: List[Dict[str, Any]] = []
+
             for s in svcs:
-                chars_out = []
+                chars_out: List[Dict[str, Any]] = []
+
                 for c in s.characteristics:
+                    # descriptors 在 bleak/bluez 有時候不一定完整，但能列就列
+                    descs = []
+                    for d in (getattr(c, "descriptors", []) or []):
+                        try:
+                            descs.append(str(d.uuid))
+                        except Exception:
+                            descs.append(str(d))
+
                     chars_out.append({
                         "uuid": str(c.uuid),
                         "handle": getattr(c, "handle", None),
                         "properties": list(getattr(c, "properties", []) or []),
-                        "descriptors": [str(d.uuid) for d in (getattr(c, "descriptors", []) or [])],
+                        "descriptors": descs,
                     })
 
                 services_out.append({
@@ -138,7 +176,9 @@ async def probe_one(address: str) -> Dict[str, Any]:
             result["ok"] = True
 
     except Exception as e:
-        result["error"] = str(e)
+        # str(e) 有時會是空字串，repr(e) 才看得到類型
+        result["error"] = repr(e)
+        logging.warning(f"[PROBE] fail -> {address}: {repr(e)}")
 
     return result
 
