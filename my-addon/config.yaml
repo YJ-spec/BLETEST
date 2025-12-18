@@ -11,7 +11,7 @@ arch:
 init: false
 
 host_dbus: true
-privileged: true
+# privileged: true
 
 homeassistant_api: true
 
