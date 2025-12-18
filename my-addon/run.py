@@ -125,6 +125,16 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
+import logging
+from typing import Dict, Any, List
+from bleak import BleakClient
+
+CONNECT_TIMEOUT_SEC = 12.0
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 
 async def probe_one(address: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {
@@ -140,26 +150,36 @@ async def probe_one(address: str) -> Dict[str, Any]:
         async with BleakClient(address, timeout=CONNECT_TIMEOUT_SEC) as client:
             logging.info(f"[PROBE] connected -> {address}")
 
-            # ⚠️ 新版 bleak：services 已在 connect 後就緒
             svcs = client.services
             if svcs is None:
-                raise RuntimeError("services is None (GATT not resolved)")
+                raise RuntimeError("client.services is None (GATT not resolved)")
 
-            logging.info(f"[PROBE] services_count -> {address}: {len(svcs)}")
+            # BleakGATTServiceCollection: 用 services.values() 取出所有 service
+            service_list = list(getattr(svcs, "services", {}).values())
+
+            svc_count = len(service_list)
+            chr_count = sum(len(s.characteristics) for s in service_list)
+            logging.info(f"[PROBE] services -> {address}: svc={svc_count}, chr={chr_count}")
 
             services_out: List[Dict[str, Any]] = []
 
-            for s in svcs:
+            for s in service_list:
                 chars_out: List[Dict[str, Any]] = []
 
                 for c in s.characteristics:
+                    # descriptors 可能不是每次都有
+                    descs = []
+                    for d in (getattr(c, "descriptors", []) or []):
+                        try:
+                            descs.append(str(d.uuid))
+                        except Exception:
+                            descs.append(str(d))
+
                     chars_out.append({
                         "uuid": str(c.uuid),
                         "handle": getattr(c, "handle", None),
                         "properties": list(getattr(c, "properties", []) or []),
-                        "descriptors": [
-                            str(d.uuid) for d in (getattr(c, "descriptors", []) or [])
-                        ],
+                        "descriptors": descs,
                     })
 
                 services_out.append({
