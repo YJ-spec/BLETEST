@@ -372,12 +372,13 @@ def api_apply(body: ApplyBody):
 async def api_fetch_details(body: FetchDetailsBody):
     # UUID mapping (128-bit)
     SVC_120A = "0000120a-0000-1000-8000-00805f9b34fb"
-    CH_IP = "00002a26-0000-1000-8000-00805f9b34fb"
+    CH_FW  = "00002a26-0000-1000-8000-00805f9b34fb"
 
     SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
     CH_SSID = "000012a1-0000-1000-8000-00805f9b34fb"
     CH_MODE = "000012a5-0000-1000-8000-00805f9b34fb"
     CH_MQTT = "000012a6-0000-1000-8000-00805f9b34fb"
+    CH_IP = "0000121a-0000-1000-8000-00805f9b34fb"
 
     SVC_12C0 = "000012c0-0000-1000-8000-00805f9b34fb"
     CH_MODEL = "00000000-0000-1000-8000-00805f9b34fb"
@@ -394,6 +395,7 @@ async def api_fetch_details(body: FetchDetailsBody):
             "mqtt": "",
             "ip": "",
             "model": "",
+            "fw_version": "",
         }
 
         client: Optional[BleakClient] = None
@@ -404,16 +406,18 @@ async def api_fetch_details(body: FetchDetailsBody):
             # 保險：避免偶發 services 還沒 resolved
             await asyncio.sleep(0.2)
 
-            ip_b = await _read_in_service(client, SVC_120A, CH_IP)
+            ip_b = await _read_in_service(client, SVC_12AA, CH_IP)
             ssid_b = await _read_in_service(client, SVC_12AA, CH_SSID)
             mode_b = await _read_in_service(client, SVC_12AA, CH_MODE)
             mqtt_b = await _read_in_service(client, SVC_12AA, CH_MQTT)
             model_b = await _read_in_service(client, SVC_12C0, CH_MODEL)
+            fw_b = await _read_in_service(client, SVC_120A, CH_FW) 
 
             ip_s = _bytes_to_text(ip_b)
             ssid_s = _bytes_to_text(ssid_b)
             mqtt_s = _bytes_to_text(mqtt_b)
             model_s = _bytes_to_text(model_b)
+            fw_s = _bytes_to_text(fw_b)
 
             mode_v = ""
             if mode_b:
@@ -430,6 +434,7 @@ async def api_fetch_details(body: FetchDetailsBody):
                 "mqtt": mqtt_s,
                 "ip": ip_s,
                 "model": model_s,
+                "fw_version": fw_s,
             })
 
         except Exception as e:

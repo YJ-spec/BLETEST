@@ -128,6 +128,7 @@
         <th>MQTT地址</th>
         <th>IP地址</th>
         <th>型號</th>
+        <th>FW版本</th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -246,6 +247,8 @@
         tr.appendChild(td(d.mqtt || ""));
         tr.appendChild(td(d.ip || ""));
         tr.appendChild(td(d.model || ""));
+        tr.appendChild(td(d.fw_version || ""));
+
 
         tr.addEventListener("click", () => {
           if (!d.address) return;
