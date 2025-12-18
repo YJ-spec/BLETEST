@@ -1,188 +1,725 @@
 <!doctype html>
 <html lang="zh-Hant">
+
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>BLE Lab (MVP-1)</title>
-  <style>
-    body { font-family: sans-serif; padding: 16px; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    button { padding: 8px 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border: 1px solid #ddd; padding: 8px; }
-    th { text-align: left; }
-    .muted { opacity: 0.7; }
-  </style>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>BLE Lab (MVP-1)</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 16px;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 8px 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+
+        th {
+            text-align: left;
+        }
+
+        .muted {
+            opacity: 0.7;
+        }
+    </style>
 </head>
+
 <body>
-  <h2>BLE Lab（MVP-1）</h2>
+    <h2>BLE Lab（MVP-1）</h2>
+    <!-- ================= Profile Panel ================= -->
+    <style>
+        .profile-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #f3f3f3;
+            border: 1px solid #ccc;
+            padding: 8px 12px;
+            margin-bottom: 8px;
+        }
 
-  <div class="row">
-    <button id="btnScan">SCAN ZP2</button>
-    <button id="btnFetch">讀取資訊（連線）</button>
+        .profile-name {
+            font-weight: bold;
+        }
 
-    <label class="muted">
-      <input type="checkbox" id="chkOnlyZp2" checked />
-      只顯示 ZP2
-    </label>
+        .profile-panel {
+            border: 1px solid #ccc;
+            padding: 12px;
+            margin-bottom: 12px;
+            background: #fafafa;
+        }
 
-    <span id="status" class="muted"></span>
-  </div>
+        .profile-panel.hidden {
+            display: none;
+        }
 
-  <table>
-    <thead>
-      <tr>
-        <th style="width:40px;"></th>
-        <th>Address</th>
-        <th>名稱</th>
-        <th>RSSI</th>
-        <th>AWS / LOCAL</th>
-        <th>SSID</th>
-        <th>MQTT地址</th>
-        <th>IP地址</th>
-        <th>型號</th>
-      </tr>
-    </thead>
-    <tbody id="tbody"></tbody>
-  </table>
+        .profile-row {
+            margin-bottom: 8px;
+        }
 
-<script>
-/* ===============================
- * Global state
- * =============================== */
-let g_scan_devices = [];  // 最新 scan 的原始結果（只含 scan 資訊）
-let g_devices = [];       // 目前顯示用資料（合併 details）
+        .profile-row label {
+            display: inline-block;
+            width: 100px;
+            font-weight: bold;
+        }
 
-const statusEl = document.getElementById("status");
-const tbody = document.getElementById("tbody");
-const chkOnlyZp2 = document.getElementById("chkOnlyZp2");
+        .profile-actions {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px;
+        }
+    </style>
 
-/* ===============================
- * Helpers
- * =============================== */
-function setStatus(msg) {
-  statusEl.textContent = msg || "";
-}
+    <div id="profileContainer">
 
-function clearTable() {
-  tbody.innerHTML = "";
-}
+        <!-- Profile 狀態列（永遠顯示） -->
+        <div class="profile-bar">
+            <div>
+                目前設定檔：
+                <span id="currentProfileName" class="profile-name">未選擇</span>
+            </div>
+            <button id="btnToggleProfile">展開設定 ▾</button>
+        </div>
 
-function applyFilter() {
-  const only = chkOnlyZp2.checked;
+        <!-- Profile 設定內容（可收合） -->
+        <div id="profilePanel" class="profile-panel hidden">
 
-  // 保留已經讀到的 details（ssid/mqtt/ip/model/mode）
-  const oldMap = new Map(g_devices.map(x => [x.address, x]));
+            <div class="profile-row">
+                <label>Profile：</label>
+                <select id="profileSelect">
+                    <!-- 之後由 JS 填入 -->
+                    <option value="">(尚未選擇)</option>
+                </select>
+            </div>
 
-  g_devices = (g_scan_devices || [])
-    .filter(d => !only || d.is_zp2)
-    .map(d => ({
-      ...d,
-      ...(oldMap.get(d.address) || {})
-    }));
-}
+            <div class="profile-row">
+                <label>Profile ID：</label>
+                <input id="profileId" type="text" placeholder="line1_local" />
+            </div>
 
-function renderTable() {
-  tbody.innerHTML = "";
+            <div class="profile-row">
+                <label>顯示名稱：</label>
+                <input id="profileName" type="text" placeholder="產線1 - LOCAL" />
+            </div>
 
-  for (const d of g_devices) {
-    const tr = document.createElement("tr");
+            <hr />
 
-    const tdChk = document.createElement("td");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.dataset.addr = d.address;
-    tdChk.appendChild(cb);
+            <div class="profile-row">
+                <label>模式：</label>
+                <label>
+                    <input type="radio" name="profileMode" value="LOCAL" checked />
+                    LOCAL
+                </label>
+                <label style="margin-left:12px;">
+                    <input type="radio" name="profileMode" value="AWS" />
+                    AWS
+                </label>
+            </div>
 
-    function td(text) {
-      const x = document.createElement("td");
-      x.textContent =
-        (text === null || text === undefined) ? "" : String(text);
-      return x;
-    }
+            <div class="profile-row">
+                <label>SSID：</label>
+                <input id="profileSsid" type="text" />
+            </div>
 
-    tr.appendChild(tdChk);
-    tr.appendChild(td(d.address || ""));
-    tr.appendChild(td(d.name || ""));
-    tr.appendChild(td(
-      (d.rssi === null || d.rssi === undefined) ? "" : d.rssi
-    ));
-    tr.appendChild(td(d.mode || ""));
-    tr.appendChild(td(d.ssid || ""));
-    tr.appendChild(td(d.mqtt || ""));
-    tr.appendChild(td(d.ip || ""));
-    tr.appendChild(td(d.model || ""));
+            <div class="profile-row">
+                <label>密碼：</label>
+                <input id="profilePassword" type="text" />
+            </div>
 
-    tbody.appendChild(tr);
-  }
-}
+            <div class="profile-row">
+                <label>MQTT：</label>
+                <input id="profileMqtt" type="text" style="width: 360px;" />
+            </div>
 
-/* ===============================
- * Actions
- * =============================== */
-async function scan() {
-  clearTable();
-  setStatus("掃描中...");
+            <div class="profile-actions">
+                <button id="btnProfileNew">新增</button>
+                <button id="btnProfileSave">儲存（覆蓋）</button>
+                <button id="btnProfileSaveAs">另存新檔</button>
+                <button id="btnProfileDelete">刪除</button>
+            </div>
 
-  const r = await fetch("/api/scan", { method: "POST" });
-  const j = await r.json();
+        </div>
+    </div>
+    <!-- =============== End Profile Panel =============== -->
 
-  setStatus(`掃描完成：${j.count} 台（ZP2: ${j.zp2_count}）`);
+    <div class="row">
+        <button id="btnScan">SCAN ZP2</button>
+        <button id="btnFetch">讀取資訊（連線）</button>
 
-  g_scan_devices = (j.results || []);
-  applyFilter();
-  renderTable();
-}
+        <label class="muted">
+            <input type="checkbox" id="chkOnlyZp2" checked />
+            只顯示 ZP2
+        </label>
 
-async function fetchDetails() {
-  const targets = [];
-  tbody.querySelectorAll("input[type=checkbox]").forEach(cb => {
-    if (cb.checked) targets.push(cb.dataset.addr);
-  });
+        <span id="status" class="muted"></span>
+    </div>
 
-  if (targets.length === 0) {
-    setStatus("你沒有勾選任何裝置");
-    return;
-  }
+    <table>
+        <thead>
+            <tr>
+                <th style="width:40px;">
+                    <input type="checkbox" id="chkAll" title="全選/全不選" />
+                </th>
+                <th>Address</th>
+                <th>名稱</th>
+                <th>RSSI</th>
+                <th>AWS / LOCAL</th>
+                <th>SSID</th>
+                <th>MQTT地址</th>
+                <th>IP地址</th>
+                <th>型號</th>
+            </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+    </table>
 
-  setStatus("讀取資訊中（逐台連線）...");
+    <script>
+        /* ===============================
+         * Global state
+         * =============================== */
+        let g_scan_devices = [];  // 最新 scan 的原始結果（只含 scan 資訊）
+        let g_devices = [];       // 目前顯示用資料（合併 details）
 
-  const r = await fetch("/api/fetch_details", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targets })
-  });
-  const j = await r.json();
+        const statusEl = document.getElementById("status");
+        const tbody = document.getElementById("tbody");
+        const chkOnlyZp2 = document.getElementById("chkOnlyZp2");
+        const chkAll = document.getElementById("chkAll");
+        let g_selected_addrs = new Set(); // 記住哪些 address 被勾選（重繪表格不會消失）
 
-  // 合併回 g_devices
-  const map = new Map(g_devices.map(x => [x.address, x]));
-  for (const it of (j.results || [])) {
-    const old = map.get(it.address) || { address: it.address };
-    map.set(it.address, { ...old, ...it });
-  }
-  g_devices = Array.from(map.values());
 
-  renderTable();
+        /* ===============================
+         * Profile UI elements
+         * =============================== */
+        const btnToggleProfile = document.getElementById("btnToggleProfile");
+        const profilePanel = document.getElementById("profilePanel");
+        const currentProfileName = document.getElementById("currentProfileName");
 
-  const fail = (j.results || []).find(x => !x.ok);
-  if (fail) {
-    setStatus(`讀取完成（部分失敗）：${fail.address} ${fail.error || ""}`);
-  } else {
-    setStatus("讀取完成（全部成功）");
-  }
-}
+        const profileSelect = document.getElementById("profileSelect");
+        const profileIdEl = document.getElementById("profileId");
+        const profileNameEl = document.getElementById("profileName");
+        const profileSsidEl = document.getElementById("profileSsid");
+        const profilePasswordEl = document.getElementById("profilePassword");
+        const profileMqttEl = document.getElementById("profileMqtt");
 
-/* ===============================
- * Events
- * =============================== */
-chkOnlyZp2.addEventListener("change", () => {
-  applyFilter();
-  renderTable();
-});
+        const btnProfileNew = document.getElementById("btnProfileNew");
+        const btnProfileSave = document.getElementById("btnProfileSave");
+        const btnProfileSaveAs = document.getElementById("btnProfileSaveAs");
+        const btnProfileDelete = document.getElementById("btnProfileDelete");
 
-document.getElementById("btnScan").onclick = scan;
-document.getElementById("btnFetch").onclick = fetchDetails;
-</script>
+        function getSelectedMode() {
+            const el = document.querySelector('input[name="profileMode"]:checked');
+            return el ? el.value : "LOCAL";
+        }
+        function setSelectedMode(mode) {
+            const v = (mode === "AWS") ? "AWS" : "LOCAL";
+            const el = document.querySelector(`input[name="profileMode"][value="${v}"]`);
+            if (el) el.checked = true;
+        }
+
+        /* ===============================
+         * Helpers
+         * =============================== */
+        function setStatus(msg) {
+            statusEl.textContent = msg || "";
+        }
+
+        function clearTable() {
+            tbody.innerHTML = "";
+        }
+
+        function applyFilter() {
+            const only = chkOnlyZp2.checked;
+
+            // 保留已經讀到的 details（ssid/mqtt/ip/model/mode）
+            const oldMap = new Map(g_devices.map(x => [x.address, x]));
+
+            g_devices = (g_scan_devices || [])
+                .filter(d => !only || d.is_zp2)
+                .map(d => ({
+                    ...d,
+                    ...(oldMap.get(d.address) || {})
+                }));
+        }
+
+        function renderTable() {
+            tbody.innerHTML = "";
+
+            function syncHeaderCheckState() {
+                const boxes = tbody.querySelectorAll('input[type="checkbox"][data-addr]');
+                if (!chkAll) return;
+
+                if (boxes.length === 0) {
+                    chkAll.checked = false;
+                    chkAll.indeterminate = false;
+                    return;
+                }
+
+                let checkedCount = 0;
+                boxes.forEach(cb => { if (cb.checked) checkedCount++; });
+
+                chkAll.checked = checkedCount === boxes.length;
+                chkAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+            }
+
+            for (const d of g_devices) {
+                const tr = document.createElement("tr");
+                tr.style.cursor = "pointer";
+
+                const tdChk = document.createElement("td");
+                const cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.dataset.addr = d.address;
+
+                // 還原勾選狀態
+                cb.checked = !!d.address && g_selected_addrs.has(d.address);
+
+                cb.addEventListener("click", (e) => {
+                    // 避免點 checkbox 觸發 row click
+                    e.stopPropagation();
+                });
+
+                cb.addEventListener("change", () => {
+                    if (!d.address) return;
+                    if (cb.checked) g_selected_addrs.add(d.address);
+                    else g_selected_addrs.delete(d.address);
+                    syncHeaderCheckState();
+                });
+
+                tdChk.appendChild(cb);
+
+                function td(text) {
+                    const x = document.createElement("td");
+                    x.textContent = (text === null || text === undefined) ? "" : String(text);
+                    return x;
+                }
+
+                tr.appendChild(tdChk);
+                tr.appendChild(td(d.address || ""));
+                tr.appendChild(td(d.name || ""));
+                tr.appendChild(td((d.rssi === null || d.rssi === undefined) ? "" : d.rssi));
+                tr.appendChild(td(d.mode || ""));
+                tr.appendChild(td(d.ssid || ""));
+                tr.appendChild(td(d.mqtt || ""));
+                tr.appendChild(td(d.ip || ""));
+                tr.appendChild(td(d.model || ""));
+
+                // 點列：切換勾選
+                tr.addEventListener("click", () => {
+                    if (!d.address) return;
+                    cb.checked = !cb.checked;
+                    if (cb.checked) g_selected_addrs.add(d.address);
+                    else g_selected_addrs.delete(d.address);
+                    syncHeaderCheckState();
+                });
+
+                // 雙擊列：只讀這一台（自動勾選它）
+                tr.addEventListener("dblclick", async () => {
+                    if (!d.address) return;
+                    g_selected_addrs.add(d.address);
+                    cb.checked = true;
+                    syncHeaderCheckState();
+                    await fetchDetails();
+                });
+
+                tbody.appendChild(tr);
+            }
+
+            syncHeaderCheckState();
+        }
+
+
+        /* ===============================
+         * Profile storage
+         * =============================== */
+        const PROFILE_KEY = "ble_lab_profiles_v1";
+        const CURRENT_PROFILE_KEY = "ble_lab_current_profile_id_v1";
+
+        function loadProfiles() {
+            try {
+                const raw = localStorage.getItem(PROFILE_KEY);
+                const arr = raw ? JSON.parse(raw) : [];
+                return Array.isArray(arr) ? arr : [];
+            } catch {
+                return [];
+            }
+        }
+
+        function saveProfiles(arr) {
+            localStorage.setItem(PROFILE_KEY, JSON.stringify(arr || []));
+        }
+
+        function getCurrentProfileId() {
+            return localStorage.getItem(CURRENT_PROFILE_KEY) || "";
+        }
+
+        function setCurrentProfileId(id) {
+            localStorage.setItem(CURRENT_PROFILE_KEY, id || "");
+        }
+
+        function setCurrentProfileName(name) {
+            currentProfileName.textContent = name || "未選擇";
+        }
+
+        function profileFromForm() {
+            return {
+                id: (profileIdEl.value || "").trim(),
+                name: (profileNameEl.value || "").trim(),
+                mode: getSelectedMode(),
+                ssid: (profileSsidEl.value || "").trim(),
+                password: (profilePasswordEl.value || "").trim(),
+                mqtt: (profileMqttEl.value || "").trim(),
+                updated_at: Date.now()
+            };
+        }
+
+        function fillFormFromProfile(p) {
+            profileIdEl.value = p?.id || "";
+            profileNameEl.value = p?.name || "";
+            setSelectedMode(p?.mode || "LOCAL");
+            profileSsidEl.value = p?.ssid || "";
+            profilePasswordEl.value = p?.password || "";
+            profileMqttEl.value = p?.mqtt || "";
+        }
+
+        function refreshProfileSelect() {
+            const profiles = loadProfiles();
+            const curId = getCurrentProfileId();
+
+            // 清空並重建
+            profileSelect.innerHTML = "";
+            const opt0 = document.createElement("option");
+            opt0.value = "";
+            opt0.textContent = "(尚未選擇)";
+            profileSelect.appendChild(opt0);
+
+            for (const p of profiles) {
+                const opt = document.createElement("option");
+                opt.value = p.id;
+                opt.textContent = `${p.name || p.id || "(未命名)"}${p.mode ? ` [${p.mode}]` : ""}`;
+                profileSelect.appendChild(opt);
+            }
+
+            profileSelect.value = curId || "";
+        }
+
+        function findProfileById(id) {
+            const profiles = loadProfiles();
+            return profiles.find(p => p.id === id) || null;
+        }
+
+        function upsertProfile(p, overwriteId = null) {
+            const profiles = loadProfiles();
+
+            const id = overwriteId || p.id;
+            if (!id) {
+                setStatus("Profile ID 不能為空");
+                return false;
+            }
+
+            const idx = profiles.findIndex(x => x.id === id);
+            const toSave = { ...p, id };
+
+            if (idx >= 0) profiles[idx] = toSave;
+            else profiles.push(toSave);
+
+            saveProfiles(profiles);
+            setCurrentProfileId(id);
+            refreshProfileSelect();
+            setCurrentProfileName(toSave.name || toSave.id);
+            return true;
+        }
+
+        function deleteProfile(id) {
+            const profiles = loadProfiles().filter(p => p.id !== id);
+            saveProfiles(profiles);
+
+            const curId = getCurrentProfileId();
+            if (curId === id) setCurrentProfileId("");
+
+            refreshProfileSelect();
+
+            if (getCurrentProfileId()) {
+                const p = findProfileById(getCurrentProfileId());
+                fillFormFromProfile(p);
+                setCurrentProfileName(p?.name || p?.id || "未選擇");
+            } else {
+                setCurrentProfileName("未選擇");
+            }
+        }
+
+        function ensureDefaultProfiles() {
+            const profiles = loadProfiles();
+            if (profiles.length > 0) return;
+
+            const demo = [
+                {
+                    id: "line1_local",
+                    name: "產線1 - LOCAL",
+                    mode: "LOCAL",
+                    ssid: "",
+                    password: "",
+                    mqtt: "mqtt://192.168.1.10:1883",
+                    updated_at: Date.now()
+                },
+                {
+                    id: "line1_aws",
+                    name: "產線1 - AWS",
+                    mode: "AWS",
+                    ssid: "",
+                    password: "",
+                    mqtt: "ssl://xxxxxxxx-ats.iot.ap-northeast-1.amazonaws.com:8883",
+                    updated_at: Date.now()
+                }
+            ];
+            saveProfiles(demo);
+        }
+
+        /* ===============================
+         * Actions: BLE scan / fetch details
+         * =============================== */
+        async function scan() {
+            clearTable();
+            setStatus("掃描中...");
+
+            const r = await fetch("/api/scan", { method: "POST" });
+            const j = await r.json();
+
+            setStatus(`掃描完成：${j.count} 台（ZP2: ${j.zp2_count}）`);
+
+            g_scan_devices = (j.results || []);
+            // cleanup：只保留本次 scan 還存在的 address
+            const alive = new Set((g_scan_devices || []).map(x => x.address).filter(Boolean));
+            g_selected_addrs = new Set([...g_selected_addrs].filter(a => alive.has(a)));
+
+            applyFilter();
+            renderTable();
+        }
+
+        async function fetchDetails() {
+            const targets = Array.from(g_selected_addrs);
+
+            if (targets.length === 0) {
+                setStatus("你沒有勾選任何裝置");
+                return;
+            }
+
+            // 讀取目前選用的 profile（如果你的後端想吃 profile，可一起送）
+            const curProfileId = getCurrentProfileId();
+            const profile = curProfileId ? findProfileById(curProfileId) : null;
+
+            setStatus("讀取資訊中（逐台連線）...");
+
+            const r = await fetch("/api/fetch_details", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    targets,
+                    profile: profile ? {
+                        id: profile.id,
+                        mode: profile.mode,
+                        ssid: profile.ssid,
+                        password: profile.password,
+                        mqtt: profile.mqtt
+                    } : null
+                })
+            });
+            const j = await r.json();
+
+            // 合併回 g_devices
+            const map = new Map(g_devices.map(x => [x.address, x]));
+            for (const it of (j.results || [])) {
+                const old = map.get(it.address) || { address: it.address };
+                map.set(it.address, { ...old, ...it });
+            }
+            g_devices = Array.from(map.values());
+
+            renderTable();
+
+            const fail = (j.results || []).find(x => !x.ok);
+            if (fail) {
+                setStatus(`讀取完成（部分失敗）：${fail.address} ${fail.error || ""}`);
+            } else {
+                setStatus("讀取完成（全部成功）");
+            }
+        }
+
+        /* ===============================
+         * Events
+         * =============================== */
+        chkOnlyZp2.addEventListener("change", () => {
+            applyFilter();
+            renderTable();
+        });
+        if (chkAll) {
+            chkAll.addEventListener("change", () => {
+                const boxes = tbody.querySelectorAll('input[type="checkbox"][data-addr]');
+                const want = chkAll.checked;
+
+                boxes.forEach(cb => {
+                    cb.checked = want;
+                    const addr = cb.dataset.addr;
+                    if (!addr) return;
+                    if (want) g_selected_addrs.add(addr);
+                    else g_selected_addrs.delete(addr);
+                });
+
+                // 更新 indeterminate
+                chkAll.indeterminate = false;
+            });
+        }
+
+
+        document.getElementById("btnScan").onclick = scan;
+        document.getElementById("btnFetch").onclick = fetchDetails;
+
+        // Profile panel expand/collapse
+        let profileExpanded = false;
+        btnToggleProfile.onclick = () => {
+            profileExpanded = !profileExpanded;
+            profilePanel.classList.toggle("hidden", !profileExpanded);
+            btnToggleProfile.textContent = profileExpanded ? "收合設定 ▴" : "展開設定 ▾";
+        };
+
+        // Select profile -> fill form
+        profileSelect.addEventListener("change", () => {
+            const id = profileSelect.value || "";
+            setCurrentProfileId(id);
+
+            if (!id) {
+                setCurrentProfileName("未選擇");
+                return;
+            }
+
+            const p = findProfileById(id);
+            if (!p) {
+                setCurrentProfileName("未選擇");
+                return;
+            }
+
+            fillFormFromProfile(p);
+            setCurrentProfileName(p.name || p.id);
+            setStatus(`已切換設定檔：${p.name || p.id}`);
+        });
+
+        // NEW: clear form (not saved)
+        btnProfileNew.onclick = () => {
+            profileSelect.value = "";
+            setCurrentProfileId("");
+            fillFormFromProfile({
+                id: "",
+                name: "",
+                mode: "LOCAL",
+                ssid: "",
+                password: "",
+                mqtt: ""
+            });
+            setCurrentProfileName("未選擇");
+            setStatus("已清空表單（尚未儲存）");
+        };
+
+        // SAVE overwrite (by current profileSelect OR by form id)
+        btnProfileSave.onclick = () => {
+            const curSelected = profileSelect.value || "";
+            const p = profileFromForm();
+
+            // 覆蓋儲存：優先覆蓋「下拉目前選擇」那個 ID
+            const targetId = curSelected || p.id;
+            if (!targetId) {
+                setStatus("請先選擇要覆蓋的 Profile，或填入 Profile ID");
+                return;
+            }
+
+            if (!p.name) {
+                setStatus("顯示名稱建議填一下（至少好辨識）");
+                // 不強制 return
+            }
+
+            const ok = upsertProfile(p, targetId);
+            if (ok) {
+                profileSelect.value = targetId;
+                setStatus(`已儲存（覆蓋）：${targetId}`);
+            }
+        };
+
+        // SAVE AS: always insert new id
+        btnProfileSaveAs.onclick = () => {
+            const p = profileFromForm();
+            if (!p.id) {
+                setStatus("另存新檔需要填 Profile ID");
+                return;
+            }
+            const exists = !!findProfileById(p.id);
+            if (exists) {
+                setStatus("這個 Profile ID 已存在，請換一個（或用『儲存（覆蓋）』）");
+                return;
+            }
+            const ok = upsertProfile(p, p.id);
+            if (ok) {
+                profileSelect.value = p.id;
+                setStatus(`已另存新檔：${p.id}`);
+            }
+        };
+
+        // DELETE
+        btnProfileDelete.onclick = () => {
+            const id = profileSelect.value || "";
+            if (!id) {
+                setStatus("請先選擇要刪除的 Profile");
+                return;
+            }
+            const p = findProfileById(id);
+            const name = p?.name || id;
+            const yes = confirm(`確定要刪除「${name}」嗎？`);
+            if (!yes) return;
+
+            deleteProfile(id);
+            setStatus(`已刪除：${name}`);
+        };
+
+        /* ===============================
+         * Boot
+         * =============================== */
+        ensureDefaultProfiles();
+        refreshProfileSelect();
+
+        // restore current profile if exists
+        const curId = getCurrentProfileId();
+        if (curId) {
+            const p = findProfileById(curId);
+            if (p) {
+                fillFormFromProfile(p);
+                setCurrentProfileName(p.name || p.id);
+                profileSelect.value = curId;
+            } else {
+                setCurrentProfileName("未選擇");
+            }
+        } else {
+            // 沒有 current，就顯示「未選擇」
+            setCurrentProfileName("未選擇");
+        }
+    </script>
+
 
 </body>
+
 </html>
