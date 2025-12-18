@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.0.41"
+version: "1.0.0"
 slug: "ble_integration"
 description: "An add-on to integrate BLE devices with Home Assistant via MQTT."
 startup: "services"
@@ -17,13 +17,13 @@ apparmor: false
 
 homeassistant_api: true
 
-# 對外開放 8099
+
 ingress: false
 ports:
   "8080/tcp": 8080
 ports_description:
   "8080/tcp": "BLE HTTP API and Status page"
-# 在 Add-on 頁面顯示「Open Web UI」按鈕（連到 /status）
+
 webui: "http://[HOST]:[PORT:8080]/"
 panel_icon: "mdi:view-list-outline"
 
