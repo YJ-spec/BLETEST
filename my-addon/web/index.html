@@ -22,6 +22,8 @@
     <button id="btnScan">SCAN ZP2</button>
     <button id="btnRefresh">刷新清單</button>
     <button id="btnApply">確認（儲存勾選）</button>
+    <button id="btnProbe">Probe（讀取GATT）</button>
+
 
     <label class="muted">
       <input type="checkbox" id="chkOnlyZp2" checked />
@@ -44,13 +46,37 @@
     <tbody id="tbody"></tbody>
   </table>
 
+  <h3>Probe Result</h3>
+    <pre id="probeBox" style="border:1px solid #ddd; padding:12px; max-height: 360px; overflow:auto;"></pre>
+    
+
+
 <script>
 const statusEl = document.getElementById("status");
 const tbody = document.getElementById("tbody");
 const chkOnlyZp2 = document.getElementById("chkOnlyZp2");
+const probeBox = document.getElementById("probeBox");
 
 function setStatus(msg) { statusEl.textContent = msg; }
 
+async function probe() {
+  setStatus("Probe 中（逐台連線讀取 GATT）...");
+  probeBox.textContent = "";
+
+  // 先把目前勾選存檔（沿用 apply 行為）
+  await apply();
+
+  const r = await fetch("/api/probe", { method: "POST" });
+  const j = await r.json();
+
+  const rr = await fetch("/api/probe_result");
+  const res = await rr.json();
+
+  probeBox.textContent = JSON.stringify(res, null, 2);
+  setStatus(`Probe 完成：${res.count} 台`);
+}
+
+document.getElementById("btnProbe").onclick = probe;
 async function scan() {
   setStatus("掃描中...");
   const r = await fetch("/api/scan", { method: "POST" });

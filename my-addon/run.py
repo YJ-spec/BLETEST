@@ -8,16 +8,19 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from bleak import BleakScanner
+from bleak import BleakScanner, BleakClient
+
 
 DATA_DIR = "/data"
 CACHE_PATH = os.path.join(DATA_DIR, "scan_cache.json")
 SELECTED_PATH = os.path.join(DATA_DIR, "selected_devices.json")
+PROBE_PATH = os.path.join(DATA_DIR, "probe_results.json")
 
+CONNECT_TIMEOUT_SEC = 12.0
 SCAN_CACHE_TTL_SEC = 60  # 掃描結果保存 60 秒
 SCAN_TIMEOUT_SEC = 8.0   # 實際掃描時間
 
-app = FastAPI(title="BLE Lab (MVP-1)")
+app = FastAPI(title="BLE Lab (MVP-2: Probe GATT)")
 
 # 掛靜態網頁
 app.mount("/static", StaticFiles(directory="/web"), name="static")
@@ -101,6 +104,45 @@ async def do_scan() -> List[Dict[str, Any]]:
     return results
 
 
+async def probe_one(address: str) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "address": address,
+        "ok": False,
+        "error": None,
+        "services": [],
+    }
+
+    try:
+        async with BleakClient(address, timeout=CONNECT_TIMEOUT_SEC) as client:
+            svcs = await client.get_services()
+
+            services_out = []
+            for s in svcs:
+                chars_out = []
+                for c in s.characteristics:
+                    chars_out.append({
+                        "uuid": str(c.uuid),
+                        "handle": getattr(c, "handle", None),
+                        "properties": list(getattr(c, "properties", []) or []),
+                        "descriptors": [str(d.uuid) for d in (getattr(c, "descriptors", []) or [])],
+                    })
+
+                services_out.append({
+                    "uuid": str(s.uuid),
+                    "handle": getattr(s, "handle", None),
+                    "description": getattr(s, "description", None),
+                    "characteristics": chars_out,
+                })
+
+            result["services"] = services_out
+            result["ok"] = True
+
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     # 直接回傳 web/index.html
@@ -150,6 +192,34 @@ def api_apply(body: ApplyBody):
     }
     save_json(SELECTED_PATH, selected)
     return {"ok": True, "saved": len(body.targets), "path": SELECTED_PATH}
+
+
+@app.post("/api/probe")
+async def api_probe():
+    """
+    MVP-2: 讀取 /data/selected_devices.json 裡的 targets
+    逐台 connect + enumerate services/characteristics
+    """
+    selected = load_json(SELECTED_PATH, default={"targets": []})
+    targets = selected.get("targets") or []
+
+    out = {
+        "ts": int(time.time()),
+        "count": len(targets),
+        "results": [],
+    }
+
+    # 逐台 probe（先不要並行）
+    for addr in targets:
+        out["results"].append(await probe_one(addr))
+
+    save_json(PROBE_PATH, out)
+    return {"ok": True, "count": out["count"]}
+
+
+@app.get("/api/probe_result")
+def api_probe_result():
+    return load_json(PROBE_PATH, default={"ts": 0, "count": 0, "results": []})
 
 
 def main():
