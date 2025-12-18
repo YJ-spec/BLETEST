@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bleak import BleakScanner, BleakClient
+from profile_store import load_profiles, save_profiles, upsert_profile, delete_profile, set_current_profile
 
 # ------------------------------------------------------------
 # Logging
@@ -29,6 +30,9 @@ SCAN_CACHE_TTL_SEC = 300  # 5 min
 SCAN_TIMEOUT_SEC = 8.0
 
 app = FastAPI(title="BLE Lab (MVP-2: Probe + Fetch Details)")
+PROFILE_LOCK = asyncio.Lock()
+PROFILE_FILE = "/data/profiles.json"
+
 
 # 靜態網頁（目前主要用 / 讀 index.html，/static 暫時可留）
 app.mount("/static", StaticFiles(directory="/web"), name="static")
@@ -210,6 +214,48 @@ async def _read_in_service(client: BleakClient, service_uuid: str, char_uuid: st
 def index():
     with open("/web/index.html", "r", encoding="utf-8") as f:
         return f.read()
+class ProfileUpsertRequest(BaseModel):
+    profile: Dict[str, Any]
+    overwrite_id: Optional[str] = None
+
+class ProfileSelectRequest(BaseModel):
+    id: str
+
+@app.get("/api/profiles")
+async def api_profiles_get():
+    async with PROFILE_LOCK:
+        doc = load_profiles(PROFILE_FILE)
+        return doc
+
+@app.post("/api/profiles/upsert")
+async def api_profiles_upsert(req: ProfileUpsertRequest):
+    async with PROFILE_LOCK:
+        doc = load_profiles(PROFILE_FILE)
+        ok, pid_or_err = upsert_profile(doc, req.profile, req.overwrite_id)
+        if not ok:
+            return {"ok": False, "error": pid_or_err}
+        save_profiles(doc, PROFILE_FILE)
+        return {"ok": True, "id": pid_or_err, "doc": doc}
+
+@app.post("/api/profiles/select")
+async def api_profiles_select(req: ProfileSelectRequest):
+    async with PROFILE_LOCK:
+        doc = load_profiles(PROFILE_FILE)
+        ok, pid_or_err = set_current_profile(doc, req.id)
+        if not ok:
+            return {"ok": False, "error": pid_or_err}
+        save_profiles(doc, PROFILE_FILE)
+        return {"ok": True, "id": pid_or_err}
+
+@app.delete("/api/profiles/{profile_id}")
+async def api_profiles_delete(profile_id: str):
+    async with PROFILE_LOCK:
+        doc = load_profiles(PROFILE_FILE)
+        ok = delete_profile(doc, profile_id)
+        if not ok:
+            return {"ok": False, "error": "Profile 不存在或 id 空"}
+        save_profiles(doc, PROFILE_FILE)
+        return {"ok": True, "doc": doc}
 
 
 @app.post("/api/scan")

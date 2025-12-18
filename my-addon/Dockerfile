@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir bleak fastapi uvicorn
 
 COPY run.py /run.py
+COPY profil_store.py /profil_store.py
 COPY web /web
 
 EXPOSE 8080
