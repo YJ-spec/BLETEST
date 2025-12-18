@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "0.0.29"
+version: "0.0.30"
 slug: "ble_integration"
 description: "An add-on to integrate BLE devices with Home Assistant via MQTT."
 startup: "services"
@@ -10,8 +10,10 @@ arch:
   - armv7
 init: false
 
+full_access: true
 host_dbus: true
-# privileged: true
+host_network: true
+apparmor: false
 
 homeassistant_api: true
 
