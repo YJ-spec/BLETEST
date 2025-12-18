@@ -94,6 +94,30 @@ def _bytes_to_text(b: bytes) -> str:
     except Exception:
         return ""
 
+def _encode_text(s: str) -> bytes:
+    return (s or "").encode("utf-8")
+
+def _build_mqtt_text(profile_mqtt: str) -> str:
+    """
+    profile.mqtt 只有 broker ip，例如 10.10.10.10
+    需要組成：10.10.10.10:1883/test/test
+
+    若使用者已經填完整（含 /），就尊重使用者。
+    """
+    s = (profile_mqtt or "").strip()
+    if not s:
+        return ""
+
+    # 已經包含 topic path → 直接用
+    if "/" in s:
+        return s
+
+    # 沒有 path → 一律補 /test/test
+    # 沒有 port → 補 :1883
+    if ":" not in s:
+        s = f"{s}:1883"
+    return f"{s}/test/test"
+
 
 async def do_scan() -> List[Dict[str, Any]]:
     devices = await BleakScanner.discover(timeout=SCAN_TIMEOUT_SEC)
@@ -206,6 +230,22 @@ async def _read_in_service(client: BleakClient, service_uuid: str, char_uuid: st
 
     return await client.read_gatt_char(ch)
 
+async def _write_in_service(client: BleakClient, service_uuid: str, char_uuid: str, data: bytes, response: bool = True) -> None:
+    svcs = client.services
+    if svcs is None:
+        raise RuntimeError("client.services is None")
+
+    svc = svcs.get_service(service_uuid)
+    if svc is None:
+        raise RuntimeError(f"service not found: {service_uuid}")
+
+    ch = svc.get_characteristic(char_uuid)
+    if ch is None:
+        raise RuntimeError(f"char not found in {service_uuid}: {char_uuid}")
+
+    # 關鍵：用「特定 characteristic 物件」寫，而不是用 UUID 字串
+    await client.write_gatt_char(ch, data, response=response)
+
 
 # ------------------------------------------------------------
 # Routes
@@ -308,6 +348,12 @@ def api_devices(only_zp2: bool = True):
 class ApplyBody(BaseModel):
     targets: List[str]
 
+class FetchDetailsBody(BaseModel):
+    targets: List[str]
+
+class WriteProfileBody(BaseModel):
+    targets: List[str]
+    profile_id: str  # 由前端傳 profileSelect 的值
 
 @app.post("/api/apply")
 def api_apply(body: ApplyBody):
@@ -319,8 +365,7 @@ def api_apply(body: ApplyBody):
     return {"ok": True, "saved": len(body.targets), "path": SELECTED_PATH}
 
 
-class FetchDetailsBody(BaseModel):
-    targets: List[str]
+
 
 
 @app.post("/api/fetch_details")
@@ -400,6 +445,92 @@ async def api_fetch_details(body: FetchDetailsBody):
         results.append(item)
 
     return {"ok": True, "results": results}
+
+@app.post("/api/write_profile")
+async def api_write_profile(body: WriteProfileBody):
+    # UUID mapping (128-bit)
+    SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
+    CH_WIFI_COMBO = "000012a1-0000-1000-8000-00805f9b34fb"  # 寫入：ssid + 0x00 + password
+    CH_MODE = "000012a5-0000-1000-8000-00805f9b34fb"        # 寫入文字 "0"/"1"
+    CH_MQTT = "000012a6-0000-1000-8000-00805f9b34fb"        # 寫入文字 "ip:1883/test/test"
+
+    targets = body.targets or []
+    pid = (body.profile_id or "").strip()
+
+    if not targets:
+        return {"ok": False, "error": "targets is empty"}
+
+    if not pid:
+        return {"ok": False, "error": "profile_id is empty"}
+
+    # 取 profile（用你現成的 profiles.json）
+    async with PROFILE_LOCK:
+        doc = load_profiles(PROFILE_FILE)
+        profiles = doc.get("profiles", []) or []
+        profile = next((p for p in profiles if str(p.get("id", "")) == pid), None)
+
+    if not profile:
+        return {"ok": False, "error": f"profile not found: {pid}"}
+
+    # 取欄位（照你前端 profileFromForm()）
+    mode = (profile.get("mode") or "").strip().upper()
+    ssid = (profile.get("ssid") or "").strip()
+    password = (profile.get("password") or "").strip()
+    mqtt_in = (profile.get("mqtt") or "").strip()
+
+    # 1) MODE：文字 "0"=AWS / "1"=LOCAL
+    mode_text = "0" if mode == "AWS" else "1"
+
+    # 2) WiFi combo：ssid + 0x00 + password
+    wifi_payload = _encode_text(ssid) + b"\x00" + _encode_text(password)
+
+    # 3) MQTT：用 profile.mqtt 組裝成 ip:1883/test/test（文字）
+    mqtt_text = _build_mqtt_text(mqtt_in)
+
+    if not mqtt_text:
+        return {"ok": False, "error": "profile.mqtt is empty"}
+
+    results = []
+
+    for address in targets:
+        item = {"address": address, "ok": False, "error": None}
+
+        client: Optional[BleakClient] = None
+        try:
+            client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
+            await client.connect()
+            await asyncio.sleep(0.2)
+
+            await _write_in_service(client, SVC_12AA, CH_MODE, _encode_text(mode_text), response=True)
+            await asyncio.sleep(0.15)
+
+            await _write_in_service(client, SVC_12AA, CH_WIFI_COMBO, wifi_payload, response=True)
+            await asyncio.sleep(0.15)
+
+            await _write_in_service(client, SVC_12AA, CH_MQTT, _encode_text(mqtt_text), response=True)
+            await asyncio.sleep(0.15)
+
+            item["ok"] = True
+
+        except Exception as e:
+            item["error"] = repr(e)
+
+        finally:
+            try:
+                if client is not None and client.is_connected:
+                    await client.disconnect()
+            except Exception:
+                pass
+
+        results.append(item)
+
+    return {
+        "ok": True,
+        "profile_id": pid,
+        "mode_text": mode_text,
+        "mqtt_text": mqtt_text,
+        "results": results,
+    }
 
 
 @app.post("/api/probe")

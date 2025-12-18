@@ -92,7 +92,7 @@
       </div>
 
       <div class="profile-actions">
-        <button id="btnProfileNew">新增</button>
+        <button id="btnProfileNew">全新</button>
         <button id="btnProfileSave">儲存（覆蓋）</button>
         <button id="btnProfileSaveAs">另存新檔</button>
         <button id="btnProfileDelete">刪除</button>
@@ -104,6 +104,7 @@
   <div class="row">
     <button id="btnScan">SCAN ZP2</button>
     <button id="btnFetch">讀取資訊（連線）</button>
+    <button id="btnWrite">寫入設定（SEND）</button>
 
     <label class="muted">
       <input type="checkbox" id="chkOnlyZp2" checked />
@@ -407,8 +408,7 @@
       if (profiles.length > 0) return;
 
       const demo = [
-        { id: "line1_local", name: "產線1 - LOCAL", mode: "LOCAL", ssid: "", password: "", mqtt: "mqtt://192.168.1.10:1883", updated_at: Date.now() },
-        { id: "line1_aws", name: "產線1 - AWS", mode: "AWS", ssid: "", password: "", mqtt: "ssl://xxxxxxxx-ats.iot.ap-northeast-1.amazonaws.com:8883", updated_at: Date.now() }
+        { id: "line1_local", name: "產線1 - LOCAL", mode: "LOCAL", ssid: "", password: "", mqtt: "10.10.10.10", updated_at: Date.now() }
       ];
 
       for (const p of demo) await apiUpsertProfile(p, p.id);
@@ -463,6 +463,36 @@
       if (fail) setStatus(`讀取完成（部分失敗）：${fail.address} ${fail.error || ""}`);
       else setStatus("讀取完成（全部成功）");
     }
+    async function writeProfile() {
+  const targets = Array.from(g_selected_addrs);
+  if (targets.length === 0) { setStatus("你沒有勾選任何裝置"); return; }
+
+  const pid = (profileSelect.value || "").trim();
+  if (!pid) { setStatus("請先選擇 Profile（上方下拉選單）"); return; }
+
+  setStatus("寫入中（逐台連線）...");
+
+  const r = await fetch("/api/write_profile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targets, profile_id: pid })
+  });
+
+  const j = await r.json();
+
+  if (!j.ok) {
+    setStatus(j.error || "寫入失敗");
+    return;
+  }
+
+  const fail = (j.results || []).find(x => !x.ok);
+  if (fail) setStatus(`寫入完成（部分失敗）：${fail.address} ${fail.error || ""}`);
+  else setStatus("寫入完成（全部成功）");
+
+  // 寫完順便讀回來更新表格（你也可以不要這行）
+  await fetchDetails();
+}
+
 
     /* ===============================
      * Events
@@ -488,6 +518,8 @@
 
     document.getElementById("btnScan").onclick = scan;
     document.getElementById("btnFetch").onclick = fetchDetails;
+    document.getElementById("btnWrite").onclick = writeProfile;
+
 
     let profileExpanded = false;
     btnToggleProfile.onclick = () => {
