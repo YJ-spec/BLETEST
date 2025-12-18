@@ -355,6 +355,10 @@ class WriteProfileBody(BaseModel):
     targets: List[str]
     profile_id: str  # 由前端傳 profileSelect 的值
 
+class CommandBody(BaseModel):
+    targets: List[str]
+    command: str   # "reset" or "reboot"
+
 @app.post("/api/apply")
 def api_apply(body: ApplyBody):
     selected = {
@@ -538,6 +542,58 @@ async def api_write_profile(body: WriteProfileBody):
         "results": results,
     }
 
+@app.post("/api/send_command")
+async def api_send_command(body: CommandBody):
+    SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
+    CH_COMMAND = "000012a4-0000-1000-8000-00805f9b34fb"
+
+    cmd = (body.command or "").strip().lower()
+    if cmd not in ("reset", "reboot"):
+        return {"ok": False, "error": "invalid command"}
+
+    targets = body.targets or []
+    if not targets:
+        return {"ok": False, "error": "targets is empty"}
+
+    payload = cmd.encode("utf-8")
+    results = []
+
+    for address in targets:
+        item = {"address": address, "ok": False, "error": None}
+        client = None
+        try:
+            client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
+            await client.connect()
+            await asyncio.sleep(0.2)
+
+            # ⚠️ 用 service + char，避免 UUID 重複問題
+            await _write_in_service(
+                client,
+                SVC_12AA,
+                CH_COMMAND,
+                payload,
+                response=True
+            )
+
+            item["ok"] = True
+
+        except Exception as e:
+            item["error"] = repr(e)
+
+        finally:
+            try:
+                if client and client.is_connected:
+                    await client.disconnect()
+            except Exception:
+                pass
+
+        results.append(item)
+
+    return {
+        "ok": True,
+        "command": cmd,
+        "results": results
+    }
 
 @app.post("/api/probe")
 async def api_probe():
