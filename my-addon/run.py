@@ -454,57 +454,52 @@ async def api_write_profile(body: WriteProfileBody):
     if not pid:
         return {"ok": False, "error": "profile_id is empty"}
 
-    # 取 profile（用你現成的 profiles.json）
+    # ------------------------------
+    # 1) 讀取「使用者設定 profile」
+    # ------------------------------
     async with PROFILE_LOCK:
         doc = load_profiles(PROFILE_FILE)
-        profiles = doc.get("profiles", []) or []
-        profile = next((p for p in profiles if str(p.get("id", "")) == pid), None)
+        plist = doc.get("profiles", []) or []
+        user_profile = next((p for p in plist if str(p.get("id", "")) == pid), None)
 
-    if not profile:
+    if not user_profile:
         return {"ok": False, "error": f"profile not found: {pid}"}
 
-    # 取欄位（照你前端 profileFromForm()）
-    mode = (profile.get("mode") or "").strip().upper()
-    ssid = (profile.get("ssid") or "").strip()
-    password = (profile.get("password") or "").strip()
-    mqtt_in = (profile.get("mqtt") or "").strip()
-
-    # 1) MODE：文字 "0"=AWS / "1"=LOCAL
-    mode_text = "0" if mode == "AWS" else "1"
-
-    # 2) WiFi combo：ssid + 0x00 + password
-    wifi_payload = _encode_text(ssid) + b"\x00" + _encode_text(password)
-
-    # 3) MQTT：用 profile.mqtt 組裝成 ip:1883/test/test（文字）
-    mqtt_text = profile.build_mqtt_text(mqtt_in)
-
-
-    if not mqtt_text:
-        return {"ok": False, "error": "profile.mqtt is empty"}
+    mode = (user_profile.get("mode") or "").strip().upper()
+    ssid = (user_profile.get("ssid") or "").strip()
+    password = (user_profile.get("password") or "").strip()
+    mqtt_in = (user_profile.get("mqtt") or "").strip()
 
     results = []
 
     for address in targets:
         item = {"address": address, "ok": False, "error": None}
-
         client: Optional[BleakClient] = None
+
         try:
+            adv_name = find_adv_name_in_cache(address)
+            gatt_profile  = get_profile_by_adv_name(adv_name)
+            if gatt_profile  is None:
+                raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
+            
+            mqtt_text = gatt_profile .build_mqtt_text(mqtt_in)
+            mode_text = "0" if mode == "AWS" else "1"
+            wifi_payload = _encode_text(ssid) + b"\x00" + _encode_text(password)
+            if not mqtt_text:
+                return {"ok": False, "error": "profile.mqtt is empty"}
+
             client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
             await client.connect()
-            adv_name = find_adv_name_in_cache(address)
-            profile = get_profile_by_adv_name(adv_name)
-            if profile is None:
-                raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
 
             await asyncio.sleep(0.2)
 
-            await _write_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MODE, _encode_text(mode_text), response=True)
+            await _write_in_service(client, gatt_profile .SVC_WIFI_CFG, gatt_profile .CH_MODE, _encode_text(mode_text), response=True)
             await asyncio.sleep(0.15)
 
-            await _write_in_service(client, profile.SVC_WIFI_CFG, profile.CH_WIFI_COMBO, wifi_payload, response=True)
+            await _write_in_service(client, gatt_profile .SVC_WIFI_CFG, gatt_profile .CH_MQTT, _encode_text(mqtt_text), response=True)
             await asyncio.sleep(0.15)
 
-            await _write_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MQTT, _encode_text(mqtt_text), response=True)
+            await _write_in_service(client, gatt_profile .SVC_WIFI_CFG, gatt_profile .CH_WIFI_COMBO, wifi_payload, response=True)
             await asyncio.sleep(0.15)
 
             item["ok"] = True
