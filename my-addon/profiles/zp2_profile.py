@@ -89,6 +89,7 @@
 
 
 # PROFILE = Zp2GattProfile()
+
 # profiles/zp2_profile.py
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -231,3 +232,5 @@ class Zp2Profile:
         目前已知：reset 有效 / reboot 無效（但仍保留語意）
         """
         return (cmd or "").strip()
+        
+PROFILE = Zp2Profile()
