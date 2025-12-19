@@ -23,7 +23,9 @@ RUN pip install --no-cache-dir bleak fastapi uvicorn
 
 COPY run.py /run.py
 COPY profile_store.py /profile_store.py
+COPY gatt_porfiles.py /gatt_porfiles.py
 COPY web /web
+COPY profiles /profiles
 
 EXPOSE 8080
 
