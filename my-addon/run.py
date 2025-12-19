@@ -51,6 +51,16 @@ PROFILE_LOCK = asyncio.Lock()
 
 
 # ------------------------------------------------------------
+# 全域鎖定器 (定義在 app 外部)
+# ------------------------------------------------------------
+# 限制總體併發，建議 3-5，這影響的是「已連線」後的傳輸
+MAX_CONCURRENT_BLE = asyncio.Semaphore(5)
+# 核心：強制「連線動作」必須一個一個來
+BLE_CONNECT_LOCK = asyncio.Lock()
+
+
+
+# ------------------------------------------------------------
 # FastAPI App
 # ------------------------------------------------------------
 app = FastAPI(title="BLE Lab (MVP-2: Probe + Fetch Details)")
@@ -416,88 +426,107 @@ class CommandBody(BaseModel):
     command: str  # "reset" or "reboot"
 
 # ============================================================
+# BLE helper: fetch one device (connect serialized, reads concurrent-limited)
+# ============================================================
+async def fetch_one(
+    address: str,
+    profile_getter_func=get_profile_by_adv_name,
+) -> Dict[str, Any]:
+    """單一裝置的讀取任務
+
+    策略：
+    - connect 階段：使用 BLE_CONNECT_LOCK 強制排隊，避免 BlueZ/DBus 的 InProgress 類錯誤
+    - read 階段：使用 MAX_CONCURRENT_BLE 做總體併發限制（已連線後才拿票）
+    - 單台裝置內：依序 read，不用 gather，降低同裝置 InProgress 機率
+    """
+    item: Dict[str, Any] = {
+        "address": address,
+        "ok": False,
+        "error": None,
+        "mode": "",
+        "ssid": "",
+        "mqtt": "",
+        "ip": "",
+        "model": "",
+        "fw_version": "",
+    }
+
+    client: Optional[BleakClient] = None
+    try:
+        adv_name = find_adv_name_in_cache(address)
+        profile = profile_getter_func(adv_name)
+        if profile is None:
+            raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
+
+        client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
+
+        # ------------------------------
+        # 1) Connect：嚴格排隊
+        # ------------------------------
+        async with BLE_CONNECT_LOCK:
+            logging.info(f"[{address}] Connecting...")
+            await client.connect()
+            # 保險：避免偶發 services 還沒 resolved
+            await asyncio.sleep(0.3)
+
+        # ------------------------------
+        # 2) Read：已連線後才做總體併發限制
+        # ------------------------------
+        async with MAX_CONCURRENT_BLE:
+            logging.info(f"[{address}] Fetching data...")
+
+            # --- READ raw ---
+            ip_b = await _read_in_service(client, profile.EP_IP.service, profile.EP_IP.char)
+            ssid_b = await _read_in_service(client, profile.EP_WIFI_COMBO.service, profile.EP_WIFI_COMBO.char)
+            mode_b = await _read_in_service(client, profile.EP_MODE.service, profile.EP_MODE.char)
+            mqtt_b = await _read_in_service(client, profile.EP_MQTT.service, profile.EP_MQTT.char)
+            model_b = await _read_in_service(client, profile.EP_MODEL.service, profile.EP_MODEL.char)
+            fw_b = await _read_in_service(client, profile.EP_FW_VERSION.service, profile.EP_FW_VERSION.char)
+
+            # --- DECODE semantic ---
+            item.update({
+                "ok": True,
+                "mode": profile.decode_mode(mode_b),
+                # 這顆其實是 combo（ssid pwd）；目前 UI 只展示 ssid，先沿用既有行為
+                "ssid": profile.decode_text(ssid_b),
+                "mqtt": profile.decode_mqtt(mqtt_b),
+                "ip": profile.decode_ip(ip_b),
+                "model": profile.decode_model(model_b),
+                "fw_version": profile.decode_fw_version(fw_b),
+            })
+
+            logging.info(f"[{address}] Done.")
+
+    except asyncio.CancelledError:
+        item["error"] = "cancelled"
+        logging.warning(f"[{address}] Cancelled.")
+        raise
+    except Exception as e:
+        item["error"] = str(e)
+        logging.error(f"[{address}] Error: {e}")
+    finally:
+        if client is not None and client.is_connected:
+            try:
+                # 避免 disconnect 卡死拖慢整批
+                await asyncio.wait_for(client.disconnect(), timeout=5.0)
+            except Exception:
+                pass
+
+    return item
+
+
+# ============================================================
 # Routes: fetch_details
 # ============================================================
 @app.post("/api/fetch_details")
 async def api_fetch_details(body: FetchDetailsBody):
-    results = []
+    targets = body.targets or []
+    if not targets:
+        return {"ok": True, "results": []}
 
-    for address in body.targets:
-        item = {
-            "address": address,
-            "ok": False,
-            "error": None,
-            "mode": "",
-            "ssid": "",
-            "mqtt": "",
-            "ip": "",
-            "model": "",
-            "fw_version": "",
-        }
-
-        client: Optional[BleakClient] = None
-        try:
-            adv_name = find_adv_name_in_cache(address)
-            profile = get_profile_by_adv_name(adv_name)
-            if profile is None:
-                raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
-
-            client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
-            await client.connect()
-
-            # 保險：避免偶發 services 還沒 resolved
-            await asyncio.sleep(0.2)
-
-            # --- READ raw ---
-            ep = profile.EP_IP
-            ip_b = await _read_in_service(client, ep.service, ep.char)
-
-            ep = profile.EP_WIFI_COMBO
-            ssid_b = await _read_in_service(client, ep.service, ep.char)
-
-            ep = profile.EP_MODE
-            mode_b = await _read_in_service(client, ep.service, ep.char)
-
-            ep = profile.EP_MQTT
-            mqtt_b = await _read_in_service(client, ep.service, ep.char)
-
-            ep = profile.EP_MODEL
-            model_b = await _read_in_service(client, ep.service, ep.char)
-
-            ep = profile.EP_FW_VERSION
-            fw_b = await _read_in_service(client, ep.service, ep.char)
-
-            # --- DECODE semantic ---
-            ip_s = profile.decode_ip(ip_b)
-            # 這顆其實是 combo（ssid\0pwd），你原本也直接當字串丟回去，先保留同樣行為
-            ssid_s = profile.decode_text(ssid_b)
-            mqtt_s = profile.decode_mqtt(mqtt_b)
-            model_s = profile.decode_model(model_b)
-            fw_s = profile.decode_fw_version(fw_b)
-            mode_v = profile.decode_mode(mode_b)
-
-            item.update({
-                "ok": True,
-                "mode": mode_v,
-                "ssid": ssid_s,
-                "mqtt": mqtt_s,
-                "ip": ip_s,
-                "model": model_s,
-                "fw_version": fw_s,
-            })
-
-        except Exception as e:
-            item["error"] = repr(e)
-
-        finally:
-            try:
-                if client is not None and client.is_connected:
-                    await client.disconnect()
-            except Exception:
-                pass
-
-        results.append(item)
-
+    # 雖然同時發起，但 connect 會被 BLE_CONNECT_LOCK 強制排隊
+    tasks = [fetch_one(addr, get_profile_by_adv_name) for addr in targets]
+    results = await asyncio.gather(*tasks)
     return {"ok": True, "results": results}
 
 
