@@ -1,5 +1,5 @@
 ﻿name: "BLE integration"
-version: "1.0.2-test2"
+version: "1.0.3-test"
 slug: "ble_integration"
 description: "An add-on to integrate BLE devices with Home Assistant via MQTT."
 startup: "services"
