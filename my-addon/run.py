@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from bleak import BleakScanner, BleakClient
 from profile_store import load_profiles, save_profiles, upsert_profile, delete_profile, set_current_profile
+from gatt_profiles import get_profile_by_adv_name
 
 # ------------------------------------------------------------
 # Logging
@@ -51,6 +52,13 @@ def load_json(path: str, default):
             return json.load(f)
     except Exception:
         return default
+
+def find_adv_name_in_cache(address: str) -> str:
+    cache = load_json(CACHE_PATH, default={"ts": 0, "results": []})
+    for d in (cache.get("results") or []):
+        if str(d.get("address")) == str(address):
+            return str(d.get("name") or "")
+    return ""
 
 
 def save_json(path: str, obj):
@@ -97,26 +105,6 @@ def _bytes_to_text(b: bytes) -> str:
 def _encode_text(s: str) -> bytes:
     return (s or "").encode("utf-8")
 
-def _build_mqtt_text(profile_mqtt: str) -> str:
-    """
-    profile.mqtt 只有 broker ip，例如 10.10.10.10
-    需要組成：10.10.10.10:1883/test/test
-
-    若使用者已經填完整（含 /），就尊重使用者。
-    """
-    s = (profile_mqtt or "").strip()
-    if not s:
-        return ""
-
-    # 已經包含 topic path → 直接用
-    if "/" in s:
-        return s
-
-    # 沒有 path → 一律補 /test/test
-    # 沒有 port → 補 :1883
-    if ":" not in s:
-        s = f"{s}:1883"
-    return f"{s}/test/test"
 
 
 async def do_scan() -> List[Dict[str, Any]]:
@@ -129,6 +117,9 @@ async def do_scan() -> List[Dict[str, Any]]:
         name = get_name(d, props)
         rssi = get_rssi(props)
 
+        profile = get_profile_by_adv_name(name)
+        model_key = profile.key if profile else ""
+
         item = {
             "address": address,
             "name": name,
@@ -138,8 +129,11 @@ async def do_scan() -> List[Dict[str, Any]]:
                 str(k): (v.hex() if hasattr(v, "hex") else str(v))
                 for k, v in (props.get("ManufacturerData") or {}).items()
             },
-            "is_zp2": is_zp2_candidate(name, props),
+            "is_zp2": is_zp2_candidate(name, props),  # 你原本的也先留著
+            "model_key": model_key,                    # ✅ 新增：ZP2 / 未來 ZS2
+            "is_supported": bool(profile),             # ✅ 新增：是否已支援 profile
         }
+
         results.append(item)
 
     def rssi_sort(v):
@@ -375,18 +369,6 @@ def api_apply(body: ApplyBody):
 @app.post("/api/fetch_details")
 async def api_fetch_details(body: FetchDetailsBody):
     # UUID mapping (128-bit)
-    SVC_120A = "0000120a-0000-1000-8000-00805f9b34fb"
-    CH_IP = "0000121a-0000-1000-8000-00805f9b34fb"
-    CH_FW  = "00002a26-0000-1000-8000-00805f9b34fb"
-
-    SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
-    CH_SSID = "000012a1-0000-1000-8000-00805f9b34fb"
-    CH_MODE = "000012a5-0000-1000-8000-00805f9b34fb"
-    CH_MQTT = "000012a6-0000-1000-8000-00805f9b34fb"
-    
-
-    SVC_12C0 = "000012c0-0000-1000-8000-00805f9b34fb"
-    CH_MODEL = "00000000-0000-1000-8000-00805f9b34fb"
 
     results = []
 
@@ -405,18 +387,23 @@ async def api_fetch_details(body: FetchDetailsBody):
 
         client: Optional[BleakClient] = None
         try:
+            adv_name = find_adv_name_in_cache(address)
+            profile = get_profile_by_adv_name(adv_name)
+            if profile is None:
+                raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
+
             client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
             await client.connect()
 
             # 保險：避免偶發 services 還沒 resolved
             await asyncio.sleep(0.2)
 
-            ip_b = await _read_in_service(client, SVC_120A, CH_IP)
-            ssid_b = await _read_in_service(client, SVC_12AA, CH_SSID)
-            mode_b = await _read_in_service(client, SVC_12AA, CH_MODE)
-            mqtt_b = await _read_in_service(client, SVC_12AA, CH_MQTT)
-            model_b = await _read_in_service(client, SVC_12C0, CH_MODEL)
-            fw_b = await _read_in_service(client, SVC_120A, CH_FW) 
+            ip_b = await _read_in_service(client, profile.SVC_SYS_INFO, profile.CH_IP)
+            ssid_b = await _read_in_service(client, profile.SVC_WIFI_CFG, profile.CH_WIFI_COMBO)
+            mode_b = await _read_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MODE)
+            mqtt_b = await _read_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MQTT)
+            model_b= await _read_in_service(client, profile.SVC_MODEL, profile.CH_MODEL)
+            fw_b   = await _read_in_service(client, profile.SVC_SYS_INFO, profile.CH_FW)
 
             ip_s = _bytes_to_text(ip_b)
             ssid_s = _bytes_to_text(ssid_b)
@@ -458,12 +445,6 @@ async def api_fetch_details(body: FetchDetailsBody):
 
 @app.post("/api/write_profile")
 async def api_write_profile(body: WriteProfileBody):
-    # UUID mapping (128-bit)
-    SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
-    CH_WIFI_COMBO = "000012a1-0000-1000-8000-00805f9b34fb"  # 寫入：ssid + 0x00 + password
-    CH_MODE = "000012a5-0000-1000-8000-00805f9b34fb"        # 寫入文字 "0"/"1"
-    CH_MQTT = "000012a6-0000-1000-8000-00805f9b34fb"        # 寫入文字 "ip:1883/test/test"
-
     targets = body.targets or []
     pid = (body.profile_id or "").strip()
 
@@ -495,7 +476,8 @@ async def api_write_profile(body: WriteProfileBody):
     wifi_payload = _encode_text(ssid) + b"\x00" + _encode_text(password)
 
     # 3) MQTT：用 profile.mqtt 組裝成 ip:1883/test/test（文字）
-    mqtt_text = _build_mqtt_text(mqtt_in)
+    mqtt_text = profile.build_mqtt_text(mqtt_in)
+
 
     if not mqtt_text:
         return {"ok": False, "error": "profile.mqtt is empty"}
@@ -509,15 +491,20 @@ async def api_write_profile(body: WriteProfileBody):
         try:
             client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
             await client.connect()
+            adv_name = find_adv_name_in_cache(address)
+            profile = get_profile_by_adv_name(adv_name)
+            if profile is None:
+                raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
+
             await asyncio.sleep(0.2)
 
-            await _write_in_service(client, SVC_12AA, CH_MODE, _encode_text(mode_text), response=True)
+            await _write_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MODE, _encode_text(mode_text), response=True)
             await asyncio.sleep(0.15)
 
-            await _write_in_service(client, SVC_12AA, CH_WIFI_COMBO, wifi_payload, response=True)
+            await _write_in_service(client, profile.SVC_WIFI_CFG, profile.CH_WIFI_COMBO, wifi_payload, response=True)
             await asyncio.sleep(0.15)
 
-            await _write_in_service(client, SVC_12AA, CH_MQTT, _encode_text(mqtt_text), response=True)
+            await _write_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MQTT, _encode_text(mqtt_text), response=True)
             await asyncio.sleep(0.15)
 
             item["ok"] = True
@@ -544,9 +531,6 @@ async def api_write_profile(body: WriteProfileBody):
 
 @app.post("/api/send_command")
 async def api_send_command(body: CommandBody):
-    SVC_12AA = "000012aa-0000-1000-8000-00805f9b34fb"
-    CH_COMMAND = "000012a4-0000-1000-8000-00805f9b34fb"
-
     cmd = (body.command or "").strip().lower()
     if cmd not in ("reset", "reboot"):
         return {"ok": False, "error": "invalid command"}
@@ -565,12 +549,16 @@ async def api_send_command(body: CommandBody):
             client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
             await client.connect()
             await asyncio.sleep(0.2)
+            adv_name = find_adv_name_in_cache(address)
+            profile = get_profile_by_adv_name(adv_name)
+            if profile is None:
+                raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
 
             # ⚠️ 用 service + char，避免 UUID 重複問題
             await _write_in_service(
                 client,
-                SVC_12AA,
-                CH_COMMAND,
+                profile.SVC_WIFI_CFG,
+                profile.CH_COMMAND,
                 payload,
                 response=True
             )
