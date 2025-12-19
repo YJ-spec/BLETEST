@@ -212,80 +212,6 @@ async def do_scan() -> List[Dict[str, Any]]:
 
 
 # ============================================================
-# Probe (enumerate GATT)
-# ============================================================
-# async def probe_one(address: str) -> Dict[str, Any]:
-#     """
-#     Enumerate GATT services/characteristics for a single device.
-
-#     用途：
-#     - debug 廠商 GATT 定義
-#     - future profile mapping 依據
-#     """
-#     result: Dict[str, Any] = {
-#         "address": address,
-#         "ok": False,
-#         "error": None,
-#         "services": [],
-#     }
-
-#     logging.info(f"[PROBE] connect -> {address}")
-
-#     try:
-#         async with BleakClient(address, timeout=CONNECT_TIMEOUT_SEC) as client:
-#             logging.info(f"[PROBE] connected -> {address}")
-
-#             svcs = client.services
-#             if svcs is None:
-#                 raise RuntimeError("client.services is None (GATT not resolved)")
-
-#             service_list = list(getattr(svcs, "services", {}).values())
-#             svc_count = len(service_list)
-#             chr_count = sum(len(s.characteristics) for s in service_list)
-#             logging.info(f"[PROBE] services -> {address}: svc={svc_count}, chr={chr_count}")
-
-#             services_out: List[Dict[str, Any]] = []
-
-#             for s in service_list:
-#                 chars_out: List[Dict[str, Any]] = []
-
-#                 for c in s.characteristics:
-#                     descs: List[str] = []
-#                     for d in (getattr(c, "descriptors", []) or []):
-#                         try:
-#                             descs.append(str(d.uuid))
-#                         except Exception:
-#                             descs.append(str(d))
-
-#                     chars_out.append(
-#                         {
-#                             "uuid": str(c.uuid),
-#                             "handle": getattr(c, "handle", None),
-#                             "properties": list(getattr(c, "properties", []) or []),
-#                             "descriptors": descs,
-#                         }
-#                     )
-
-#                 services_out.append(
-#                     {
-#                         "uuid": str(s.uuid),
-#                         "handle": getattr(s, "handle", None),
-#                         "description": getattr(s, "description", None),
-#                         "characteristics": chars_out,
-#                     }
-#                 )
-
-#             result["services"] = services_out
-#             result["ok"] = True
-
-#     except Exception as e:
-#         result["error"] = repr(e)
-#         logging.warning(f"[PROBE] fail -> {address}: {repr(e)}")
-
-#     return result
-
-
-# ============================================================
 # GATT helpers for fetch_details / write
 # ============================================================
 async def _read_in_service(client: BleakClient, service_uuid: str, char_uuid: str) -> bytes:
@@ -489,32 +415,12 @@ class CommandBody(BaseModel):
     targets: List[str]
     command: str  # "reset" or "reboot"
 
-
-# @app.post("/api/apply")
-# def api_apply(body: ApplyBody):
-#     """Save selected target addresses for probe."""
-#     selected = {
-#         "ts": int(time.time()),
-#         "targets": body.targets,
-#     }
-#     save_json(SELECTED_PATH, selected)
-#     return {"ok": True, "saved": len(body.targets), "path": SELECTED_PATH}
-
-
 # ============================================================
 # Routes: fetch_details
 # ============================================================
 @app.post("/api/fetch_details")
 async def api_fetch_details(body: FetchDetailsBody):
-    """
-    Fetch device details using GATT profile mapping.
-
-    流程：
-    - 由 cache 找 adv_name
-    - 由 adv_name 找 gatt profile
-    - 用 service + characteristic 物件做 read
-    """
-    results: List[Dict[str, Any]] = []
+    results = []
 
     for address in body.targets:
         item = {
@@ -530,7 +436,6 @@ async def api_fetch_details(body: FetchDetailsBody):
         }
 
         client: Optional[BleakClient] = None
-
         try:
             adv_name = find_adv_name_in_cache(address)
             profile = get_profile_by_adv_name(adv_name)
@@ -543,39 +448,43 @@ async def api_fetch_details(body: FetchDetailsBody):
             # 保險：避免偶發 services 還沒 resolved
             await asyncio.sleep(0.2)
 
-            ip_b = await _read_in_service(client, profile.SVC_SYS_INFO, profile.CH_IP)
-            ssid_b = await _read_in_service(client, profile.SVC_WIFI_CFG, profile.CH_WIFI_COMBO)
-            mode_b = await _read_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MODE)
-            mqtt_b = await _read_in_service(client, profile.SVC_WIFI_CFG, profile.CH_MQTT)
-            model_b = await _read_in_service(client, profile.SVC_MODEL, profile.CH_MODEL)
-            fw_b = await _read_in_service(client, profile.SVC_SYS_INFO, profile.CH_FW)
+            # --- READ raw ---
+            ep = profile.EP_IP
+            ip_b = await _read_in_service(client, ep.service, ep.char)
 
-            ip_s = _bytes_to_text(ip_b)
-            ssid_s = _bytes_to_text(ssid_b)
-            mqtt_s = _bytes_to_text(mqtt_b)
-            model_s = _bytes_to_text(model_b)
-            fw_s = _bytes_to_text(fw_b)
+            ep = profile.EP_WIFI_COMBO
+            ssid_b = await _read_in_service(client, ep.service, ep.char)
 
-            # mode 可能是 \x00/\x01，也可能是文字 "0"/"1"
-            mode_v = ""
-            if mode_b:
-                if mode_b[:1] in (b"\x00", b"\x01"):
-                    mode_v = "AWS" if mode_b[0] == 0 else "LOCAL"
-                else:
-                    t = _bytes_to_text(mode_b)
-                    mode_v = "AWS" if t == "0" else ("LOCAL" if t == "1" else t)
+            ep = profile.EP_MODE
+            mode_b = await _read_in_service(client, ep.service, ep.char)
 
-            item.update(
-                {
-                    "ok": True,
-                    "mode": mode_v,
-                    "ssid": ssid_s,
-                    "mqtt": mqtt_s,
-                    "ip": ip_s,
-                    "model": model_s,
-                    "fw_version": fw_s,
-                }
-            )
+            ep = profile.EP_MQTT
+            mqtt_b = await _read_in_service(client, ep.service, ep.char)
+
+            ep = profile.EP_MODEL
+            model_b = await _read_in_service(client, ep.service, ep.char)
+
+            ep = profile.EP_FW_VERSION
+            fw_b = await _read_in_service(client, ep.service, ep.char)
+
+            # --- DECODE semantic ---
+            ip_s = profile.decode_ip(ip_b)
+            # 這顆其實是 combo（ssid\0pwd），你原本也直接當字串丟回去，先保留同樣行為
+            ssid_s = profile.decode_text(ssid_b)
+            mqtt_s = profile.decode_mqtt(mqtt_b)
+            model_s = profile.decode_model(model_b)
+            fw_s = profile.decode_fw_version(fw_b)
+            mode_v = profile.decode_mode(mode_b)
+
+            item.update({
+                "ok": True,
+                "mode": mode_v,
+                "ssid": ssid_s,
+                "mqtt": mqtt_s,
+                "ip": ip_s,
+                "model": model_s,
+                "fw_version": fw_s,
+            })
 
         except Exception as e:
             item["error"] = repr(e)
@@ -592,19 +501,12 @@ async def api_fetch_details(body: FetchDetailsBody):
     return {"ok": True, "results": results}
 
 
+
 # ============================================================
 # Routes: write_profile
 # ============================================================
 @app.post("/api/write_profile")
 async def api_write_profile(body: WriteProfileBody):
-    """
-    Write user_profile (profiles.json) into devices via gatt_profile.
-
-    規則（已定案）：
-    - user_profile 與 gatt_profile 變數名絕不混用
-    - 每台 device 自己判斷 gatt_profile
-    - 單台失敗不影響整批（但此函式目前保留原有 return 行為，不改）
-    """
     targets = body.targets or []
     pid = (body.profile_id or "").strip()
 
@@ -630,7 +532,11 @@ async def api_write_profile(body: WriteProfileBody):
     password = (user_profile.get("password") or "").strip()
     mqtt_in = (user_profile.get("mqtt") or "").strip()
 
-    results: List[Dict[str, Any]] = []
+    results = []
+
+    # 這兩個給 return 用（沿用你原本結構：回傳最後一台的值）
+    mode_text = ""
+    mqtt_text = ""
 
     for address in targets:
         item = {"address": address, "ok": False, "error": None}
@@ -638,52 +544,60 @@ async def api_write_profile(body: WriteProfileBody):
 
         try:
             adv_name = find_adv_name_in_cache(address)
-
-            # 由 ADV name 判斷型號對應的 gatt profile（profile 驅動）
-            gatt_profile = get_profile_by_adv_name(adv_name)
-            if gatt_profile is None:
+            profile = get_profile_by_adv_name(adv_name)
+            if profile is None:
                 raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
 
-            # 批次固定：mode / wifi payload
-            # 每台計算：mqtt_text（由 gatt_profile 決定 encode 行為）
-            mqtt_text = gatt_profile.build_mqtt_text(mqtt_in)
-            mode_text = "0" if mode == "AWS" else "1"
-            wifi_payload = _encode_text(ssid) + b"\x00" + _encode_text(password)
+            # profile 負責規格一致性（文字/拼接）
+            mqtt_text = profile.encode_mqtt(mqtt_in)      # str
+            mode_text = profile.encode_mode(mode)         # str
+            wifi_payload = profile.encode_wifi_combo(ssid, password)  # bytes
 
+            # ⚠️ 保留原本行為：mqtt 空就直接 return（不改策略）
             if not mqtt_text:
-                # ⚠️ 保留原本行為：遇到空 mqtt 直接 return（不做功能修改）
                 return {"ok": False, "error": "profile.mqtt is empty"}
 
             client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
             await client.connect()
-
-            # 保險：避免偶發 services 還沒 resolved
             await asyncio.sleep(0.2)
 
+            # # MODE（文字 -> bytes）
+            # ep = profile.EP_MODE
+            # await _write_in_service(
+            #     client, ep.service, ep.char,
+            #     mqtt_text=None,  # placeholder, ignore
+            # )
+            # # ↑ 這行不要，下面是正確的（我留這個註解避免你 copy 錯）
+
+            ep = profile.EP_MODE
             await _write_in_service(
                 client,
-                gatt_profile.SVC_WIFI_CFG,
-                gatt_profile.CH_MODE,
+                ep.service,
+                ep.char,
                 _encode_text(mode_text),
-                response=True,
+                response=True
             )
             await asyncio.sleep(0.15)
 
+            # MQTT（文字 -> bytes）
+            ep = profile.EP_MQTT
             await _write_in_service(
                 client,
-                gatt_profile.SVC_WIFI_CFG,
-                gatt_profile.CH_MQTT,
+                ep.service,
+                ep.char,
                 _encode_text(mqtt_text),
-                response=True,
+                response=True
             )
             await asyncio.sleep(0.15)
 
+            # WIFI_COMBO（已是 bytes）
+            ep = profile.EP_WIFI_COMBO
             await _write_in_service(
                 client,
-                gatt_profile.SVC_WIFI_CFG,
-                gatt_profile.CH_WIFI_COMBO,
+                ep.service,
+                ep.char,
                 wifi_payload,
-                response=True,
+                response=True
             )
             await asyncio.sleep(0.15)
 
@@ -715,13 +629,6 @@ async def api_write_profile(body: WriteProfileBody):
 # ============================================================
 @app.post("/api/send_command")
 async def api_send_command(body: CommandBody):
-    """
-    Send a simple command to devices.
-
-    注意：
-    - 目前 reboot 無效，reset 有效（你已記錄）
-    - 仍然使用 service + characteristic 物件寫入，避免 UUID 重複問題
-    """
     cmd = (body.command or "").strip().lower()
     if cmd not in ("reset", "reboot"):
         return {"ok": False, "error": "invalid command"}
@@ -730,12 +637,11 @@ async def api_send_command(body: CommandBody):
     if not targets:
         return {"ok": False, "error": "targets is empty"}
 
-    payload = cmd.encode("utf-8")
-    results: List[Dict[str, Any]] = []
+    results = []
 
     for address in targets:
         item = {"address": address, "ok": False, "error": None}
-        client = None
+        client: Optional[BleakClient] = None
 
         try:
             client = BleakClient(address, timeout=CONNECT_TIMEOUT_SEC)
@@ -747,12 +653,16 @@ async def api_send_command(body: CommandBody):
             if profile is None:
                 raise RuntimeError(f"unsupported device by adv name: '{adv_name}'")
 
+            cmd_text = profile.encode_command(cmd)  # str
+            payload = _encode_text(cmd_text)        # bytes
+
+            ep = profile.EP_COMMAND
             await _write_in_service(
                 client,
-                profile.SVC_WIFI_CFG,
-                profile.CH_COMMAND,
+                ep.service,
+                ep.char,
                 payload,
-                response=True,
+                response=True
             )
 
             item["ok"] = True
@@ -762,46 +672,14 @@ async def api_send_command(body: CommandBody):
 
         finally:
             try:
-                if client and client.is_connected:
+                if client is not None and client.is_connected:
                     await client.disconnect()
             except Exception:
                 pass
 
         results.append(item)
 
-    return {
-        "ok": True,
-        "command": cmd,
-        "results": results,
-    }
-
-
-# ============================================================
-# Routes: probe selected targets
-# ============================================================
-# @app.post("/api/probe")
-# async def api_probe():
-#     """Probe all targets saved by /api/apply and persist results to file."""
-#     selected = load_json(SELECTED_PATH, default={"targets": []})
-#     targets = selected.get("targets") or []
-
-#     out = {
-#         "ts": int(time.time()),
-#         "count": len(targets),
-#         "results": [],
-#     }
-
-#     for addr in targets:
-#         out["results"].append(await probe_one(addr))
-
-#     save_json(PROBE_PATH, out)
-#     return {"ok": True, "count": out["count"]}
-
-
-# @app.get("/api/probe_result")
-# def api_probe_result():
-#     """Read persisted probe results."""
-#     return load_json(PROBE_PATH, default={"ts": 0, "count": 0, "results": []})
+    return {"ok": True, "command": cmd, "results": results}
 
 
 # ============================================================
